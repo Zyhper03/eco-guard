@@ -109,30 +109,6 @@ class GoaEcoGuard {
         }
 
         // Handle join form submission
-        
-        // const joinForm = document.getElementById("joinForm");
-        // if (joinForm) {
-        //     joinForm.addEventListener("submit", async (e) => {
-        //         e.preventDefault();
-        //         const data = {
-        //             name: document.getElementById("joinName").value,
-        //             email: document.getElementById("joinEmail").value,
-        //             phone: document.getElementById("joinPhone").value
-        //         };
-
-        //         // Use the deployed backend
-        //         const res = await fetch(`${API_BASE}/api/join`, {
-        //             method: "POST",
-        //             headers: { "Content-Type": "application/json" },
-        //             body: JSON.stringify(data)
-        //         });
-
-        //         const result = await res.json();
-        //         alert(result.message);
-        //         if (joinModal) joinModal.style.display = "none";
-        //     });
-        // }
-
         const joinForm = document.getElementById("joinForm");
         if (joinForm) {
             joinForm.addEventListener("submit", async (e) => {
@@ -175,7 +151,6 @@ class GoaEcoGuard {
                 }
             });
         }
-
 
         // Keyboard navigation
         document.addEventListener('keydown', (e) => {
@@ -262,476 +237,489 @@ class GoaEcoGuard {
 
     // Data Loading
     loadData() {
-        this.loadReportsFromDB();
-        this.loadHotspots();
-        this.loadMissions();
-        this.loadLeaderboard();
-        this.loadPolicies();
-        this.loadExperiences();
+        this.loadReportsFromDB(); // Only this loads from DB
+        this.loadHotspots();      // Static data
+        this.loadMissions();      // Static data (for now)
+        this.loadLeaderboard();   // Static data
+        this.loadPolicies();      // Static data
+        this.loadExperiences();   // Static data
     }
 
-    // Reports Data & Functions
+    // Reports Data & Functions - FIXED VERSION
     async loadReportsFromDB() {
         try {
             const res = await fetch(`${API_BASE}/api/reports`);
+            if (!res.ok) {
+                throw new Error('Failed to fetch reports');
+            }
             const data = await res.json();
-            this.reports = data.map(r => ({
-                id: r.id,
-                location: r.location,
-                description: r.description,
-                image: r.image || 'https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=400&h=300&fit=crop',
-                timestamp: 'Just now',
-                status: 'pending',
-                severity: 'medium'
-            }));
+            
+            // Use ONLY database data, no fallback to dummy data
+            if (data && data.length > 0) {
+                this.reports = data.map(r => ({
+                    id: r.id,
+                    location: r.location,
+                    description: r.description,
+                    image: r.image || 'https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=400&h=300&fit=crop',
+                    timestamp: this.formatTimestamp(r.created_at),
+                    status: r.status || 'pending',
+                    severity: 'medium'
+                }));
+            } else {
+                // If no reports in database, show empty state
+                this.reports = [];
+            }
             this.renderReports();
         } catch (error) {
             console.error("Error loading reports:", error);
-            // Fallback to sample data if backend is down
-            this.loadSampleReports();
+            // Show empty state instead of dummy data
+            this.reports = [];
+            this.renderReports();
+            this.showToast('Unable to load reports. Please try again later.', 'error');
         }
     }
 
-    loadSampleReports() {
-        this.reports = [
-            {
-                id: '1',
-                location: 'Baga Beach, North Goa',
-                description: 'Plastic bottles and food containers scattered along the shoreline after the weekend rush.',
-                image: 'https://images.unsplash.com/photo-1530587191325-3db32d826c18?w=400&h=300&fit=crop',
-                timestamp: '2 hours ago',
-                status: 'verified',
-                severity: 'high'
-            },
-            {
-                id: '2',
-                location: 'Mandovi River, Panjim',
-                description: 'Oil spill spotted near the ferry terminal affecting local fishing activities.',
-                image: 'https://images.unsplash.com/photo-1556075798-4825dfaaf498?w=400&h=300&fit=crop',
-                timestamp: '5 hours ago',
-                status: 'pending',
-                severity: 'high'
-            },
-            {
-                id: '3',
-                location: 'Colva Beach South',
-                description: 'Illegal waste dumping from nearby construction site during early morning hours.',
-                image: 'https://images.unsplash.com/photo-1621451537084-482c73073a0f?w=400&h=300&fit=crop',
-                timestamp: '1 day ago',
-                status: 'resolved',
-                severity: 'medium'
-            }
-        ];
-        this.renderReports();
+    // Helper method to format timestamps
+    formatTimestamp(timestamp) {
+        if (!timestamp) return 'Recently';
+        
+        const now = new Date();
+        const reportTime = new Date(timestamp);
+        const diffMs = now - reportTime;
+        const diffMins = Math.floor(diffMs / 60000);
+        const diffHours = Math.floor(diffMs / 3600000);
+        const diffDays = Math.floor(diffMs / 86400000);
+        
+        if (diffMins < 1) return 'Just now';
+        if (diffMins < 60) return `${diffMins} minutes ago`;
+        if (diffHours < 24) return `${diffHours} hours ago`;
+        if (diffDays < 7) return `${diffDays} days ago`;
+        
+        return reportTime.toLocaleDateString();
     }
 
     renderReports() {
         const reportsList = document.getElementById('reportsList');
         if (!reportsList) return;
 
-        reportsList.innerHTML = this.reports.map(report => `
-            <div class="report-card">
-                <div class="report-header">
-                    <img src="${report.image}" alt="Report evidence" class="report-image">
-                    <div class="report-info">
-                        <div class="report-location">${report.location}</div>
-                        <div class="report-description">${report.description}</div>
-                        <div class="report-meta">
-                            <span class="report-time">${report.timestamp}</span>
-                            <span class="report-status status-${report.status}">${report.status}</span>
+        if (this.reports.length === 0) {
+            reportsList.innerHTML = `
+                <div class="text-center" style="padding: 2rem; color: var(--muted-foreground);">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-bottom: 1rem;">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                        <polyline points="14,2 14,8 20,8"/>
+                        <line x1="16" y1="13" x2="8" y2="13"/>
+                        <line x1="16" y1="17" x2="8" y2="17"/>
+                        <polyline points="10,9 9,9 8,9"/>
+                    </svg>
+                    <h3>No Reports Yet</h3>
+                    <p>Be the first to report an environmental issue in your area!</p>
+                </div>
+            `;
+        } else {
+            reportsList.innerHTML = this.reports.map(report => `
+                <div class="report-card">
+                    <div class="report-header">
+                        <img src="${report.image}" alt="Report evidence" class="report-image">
+                        <div class="report-info">
+                            <div class="report-location">${report.location}</div>
+                            <div class="report-description">${report.description}</div>
+                            <div class="report-meta">
+                                <span class="report-time">${report.timestamp}</span>
+                                <span class="report-status status-${report.status}">${report.status}</span>
+                            </div>
                         </div>
                     </div>
                 </div>
-            </div>
-        `).join('');
+            `).join('');
+        }
     }
 
     // IMPROVED handleReportSubmission
-handleReportSubmission(e) {
-    e.preventDefault();
-    
-    const location = document.getElementById('location').value;
-    const description = document.getElementById('description').value;
-    const image = document.getElementById('image').value;
-
-    if (!location || !description) {
-        this.showToast('Please fill in location and description fields.', 'error');
-        return;
-    }
-
-    // Show loading state
-    const submitBtn = e.target.querySelector('button[type="submit"]');
-    const originalText = submitBtn.innerHTML;
-    submitBtn.innerHTML = 'Submitting...';
-    submitBtn.disabled = true;
-
-    // Use the deployed backend
-    fetch(`${API_BASE}/api/report`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ location, description, image })
-    })
-    .then(async (res) => {
-        const data = await res.json();
+    handleReportSubmission(e) {
+        e.preventDefault();
         
-        if (!res.ok) {
-            throw new Error(data.error || 'Failed to submit report');
+        const location = document.getElementById('location').value;
+        const description = document.getElementById('description').value;
+        const image = document.getElementById('image').value;
+
+        if (!location || !description) {
+            this.showToast('Please fill in location and description fields.', 'error');
+            return;
         }
-        
-        return data;
-    })
-    .then(result => {
-        this.showToast(result.message, 'success');
-        e.target.reset();
-        this.loadReportsFromDB();
-    })
-    .catch((error) => {
-        console.error("Error submitting report:", error);
-        this.showToast(error.message || "Error submitting report. Try again.", "error");
-    })
-    .finally(() => {
-        // Reset button state
-        submitBtn.innerHTML = originalText;
-        submitBtn.disabled = false;
-    });
-}
 
+        // Show loading state
+        const submitBtn = e.target.querySelector('button[type="submit"]');
+        const originalText = submitBtn.innerHTML;
+        submitBtn.innerHTML = 'Submitting...';
+        submitBtn.disabled = true;
 
+        // Use the deployed backend
+        fetch(`${API_BASE}/api/report`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ location, description, image })
+        })
+        .then(async (res) => {
+            const data = await res.json();
+            
+            if (!res.ok) {
+                throw new Error(data.error || 'Failed to submit report');
+            }
+            
+            return data;
+        })
+        .then(result => {
+            this.showToast(result.message, 'success');
+            e.target.reset();
+            this.loadReportsFromDB(); // Reload from database
+        })
+        .catch((error) => {
+            console.error("Error submitting report:", error);
+            this.showToast(error.message || "Error submitting report. Try again.", "error");
+        })
+        .finally(() => {
+            // Reset button state
+            submitBtn.innerHTML = originalText;
+            submitBtn.disabled = false;
+        });
+    }
 
     // Heatmap functions
     loadHotspots() {
-    this.hotspots = [
-        {
-            id: '1',
-            location: 'Baga Beach North',
-            coordinates: { lat: 15.5579, lng: 73.7557 },
-            pollutionLevel: 'high',
-            type: 'Plastic Waste',
-            lastUpdated: '2 hours ago',
-            reports: 8,
-            severity: 75
-        },
-        {
-            id: '2',
-            location: 'Mandovi River - Ferry Terminal',
-            coordinates: { lat: 15.4929, lng: 73.8278 },
-            pollutionLevel: 'critical',
-            type: 'Oil Spill',
-            lastUpdated: '4 hours ago',
-            reports: 15,
-            severity: 90
-        },
-        {
-            id: '3',
-            location: 'Colva Beach South',
-            coordinates: { lat: 15.2798, lng: 73.9111 },
-            pollutionLevel: 'medium',
-            type: 'Construction Debris',
-            lastUpdated: '1 day ago',
-            reports: 3,
-            severity: 45
-        },
-        {
-            id: '4',
-            location: 'Anjuna Beach',
-            coordinates: { lat: 15.5739, lng: 73.7373 },
-            pollutionLevel: 'low',
-            type: 'Litter',
-            lastUpdated: '2 days ago',
-            reports: 2,
-            severity: 20
-        },
-        {
-            id: '5',
-            location: 'Chapora River Mouth',
-            coordinates: { lat: 15.6064, lng: 73.7411 },
-            pollutionLevel: 'high',
-            type: 'Sewage Discharge',
-            lastUpdated: '6 hours ago',
-            reports: 6,
-            severity: 65
-        },
-        {
-            id: '6',
-            location: 'Calangute Beach Central',
-            coordinates: { lat: 15.5435, lng: 73.7538 },
-            pollutionLevel: 'medium',
-            type: 'Food Waste',
-            lastUpdated: '12 hours ago',
-            reports: 4,
-            severity: 40
-        },
-        {
-            id: '7',
-            location: 'Palolem Beach',
-            coordinates: { lat: 15.0106, lng: 74.0238 },
-            pollutionLevel: 'low',
-            type: 'Plastic Bottles',
-            lastUpdated: '3 days ago',
-            reports: 3,
-            severity: 25
-        },
-        {
-            id: '8',
-            location: 'Morjim Beach',
-            coordinates: { lat: 15.6304, lng: 73.7398 },
-            pollutionLevel: 'critical',
-            type: 'Industrial Waste',
-            lastUpdated: '1 hour ago',
-            reports: 12,
-            severity: 85
-        }
-    ];
+        this.hotspots = [
+            {
+                id: '1',
+                location: 'Baga Beach North',
+                coordinates: { lat: 15.5579, lng: 73.7557 },
+                pollutionLevel: 'high',
+                type: 'Plastic Waste',
+                lastUpdated: '2 hours ago',
+                reports: 8,
+                severity: 75
+            },
+            {
+                id: '2',
+                location: 'Mandovi River - Ferry Terminal',
+                coordinates: { lat: 15.4929, lng: 73.8278 },
+                pollutionLevel: 'critical',
+                type: 'Oil Spill',
+                lastUpdated: '4 hours ago',
+                reports: 15,
+                severity: 90
+            },
+            {
+                id: '3',
+                location: 'Colva Beach South',
+                coordinates: { lat: 15.2798, lng: 73.9111 },
+                pollutionLevel: 'medium',
+                type: 'Construction Debris',
+                lastUpdated: '1 day ago',
+                reports: 3,
+                severity: 45
+            },
+            {
+                id: '4',
+                location: 'Anjuna Beach',
+                coordinates: { lat: 15.5739, lng: 73.7373 },
+                pollutionLevel: 'low',
+                type: 'Litter',
+                lastUpdated: '2 days ago',
+                reports: 2,
+                severity: 20
+            },
+            {
+                id: '5',
+                location: 'Chapora River Mouth',
+                coordinates: { lat: 15.6064, lng: 73.7411 },
+                pollutionLevel: 'high',
+                type: 'Sewage Discharge',
+                lastUpdated: '6 hours ago',
+                reports: 6,
+                severity: 65
+            },
+            {
+                id: '6',
+                location: 'Calangute Beach Central',
+                coordinates: { lat: 15.5435, lng: 73.7538 },
+                pollutionLevel: 'medium',
+                type: 'Food Waste',
+                lastUpdated: '12 hours ago',
+                reports: 4,
+                severity: 40
+            },
+            {
+                id: '7',
+                location: 'Palolem Beach',
+                coordinates: { lat: 15.0106, lng: 74.0238 },
+                pollutionLevel: 'low',
+                type: 'Plastic Bottles',
+                lastUpdated: '3 days ago',
+                reports: 3,
+                severity: 25
+            },
+            {
+                id: '8',
+                location: 'Morjim Beach',
+                coordinates: { lat: 15.6304, lng: 73.7398 },
+                pollutionLevel: 'critical',
+                type: 'Industrial Waste',
+                lastUpdated: '1 hour ago',
+                reports: 12,
+                severity: 85
+            }
+        ];
 
-    this.initMap();
-    this.renderHotspots();
-}
-
-initMap() {
-    // Initialize the map
-    this.map = L.map('goaMap').setView([15.5000, 73.8000], 10); // Center on Goa
-
-    // Add OpenStreetMap tiles
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-        maxZoom: 18,
-    }).addTo(this.map);
-
-    // Add scale control
-    L.control.scale().addTo(this.map);
-
-    // Create layer groups for different pollution levels
-    this.markerLayers = {
-        all: L.layerGroup().addTo(this.map),
-        critical: L.layerGroup(),
-        high: L.layerGroup(),
-        medium: L.layerGroup(),
-        low: L.layerGroup()
-    };
-
-    // Add layer control
-    this.initLayerControl();
-}
-
-initLayerControl() {
-    // Create layer control
-    const overlayMaps = {
-        "Critical Pollution": this.markerLayers.critical,
-        "High Pollution": this.markerLayers.high,
-        "Medium Pollution": this.markerLayers.medium,
-        "Low Pollution": this.markerLayers.low
-    };
-
-    L.control.layers(null, overlayMaps, {
-        collapsed: false,
-        position: 'topright'
-    }).addTo(this.map);
-}
-
-getPollutionIcon(level) {
-    const iconConfig = {
-        critical: {
-            color: '#dc2626',
-            icon: '🔥',
-            size: 30
-        },
-        high: {
-            color: '#ea580c',
-            icon: '⚠️',
-            size: 28
-        },
-        medium: {
-            color: '#d97706',
-            icon: '🔸',
-            size: 26
-        },
-        low: {
-            color: '#16a34a',
-            icon: '💚',
-            size: 24
-        }
-    };
-
-    const config = iconConfig[level] || iconConfig.medium;
-
-    return L.divIcon({
-        html: `
-            <div style="
-                background: ${config.color};
-                width: ${config.size}px;
-                height: ${config.size}px;
-                border-radius: 50%;
-                border: 3px solid white;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                font-size: 12px;
-                color: white;
-                box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-                animation: pulse 2s infinite;
-            ">
-                ${config.icon}
-            </div>
-        `,
-        className: 'pollution-marker',
-        iconSize: [config.size, config.size],
-        iconAnchor: [config.size / 2, config.size / 2]
-    });
-}
-
-createPopupContent(hotspot) {
-    return `
-        <div class="pollution-popup">
-            <div class="popup-header">
-                <div class="popup-dot" style="background: ${this.getPollutionColor(hotspot.pollutionLevel)}"></div>
-                <h3 class="popup-title">${hotspot.location}</h3>
-            </div>
-            <div class="popup-details">
-                <div class="popup-detail">
-                    <span>Type:</span>
-                    <span><strong>${hotspot.type}</strong></span>
-                </div>
-                <div class="popup-detail">
-                    <span>Severity:</span>
-                    <span><strong>${hotspot.pollutionLevel.toUpperCase()}</strong></span>
-                </div>
-                <div class="popup-detail">
-                    <span>Reports:</span>
-                    <span><strong>${hotspot.reports}</strong></span>
-                </div>
-                <div class="popup-detail">
-                    <span>Last Updated:</span>
-                    <span>${hotspot.lastUpdated}</span>
-                </div>
-                <div class="popup-detail">
-                    <span>Coordinates:</span>
-                    <span>${hotspot.coordinates.lat.toFixed(4)}, ${hotspot.coordinates.lng.toFixed(4)}</span>
-                </div>
-            </div>
-        </div>
-    `;
-}
-
-getPollutionColor(level) {
-    const colors = {
-        critical: '#dc2626',
-        high: '#ea580c',
-        medium: '#d97706',
-        low: '#16a34a'
-    };
-    return colors[level] || '#6b7280';
-}
-
-renderHotspots(filter = 'all') {
-    // Clear existing markers from all layers
-    Object.values(this.markerLayers).forEach(layer => layer.clearLayers());
-
-    const filteredHotspots = filter === 'all' 
-        ? this.hotspots 
-        : this.hotspots.filter(spot => spot.pollutionLevel === filter);
-
-    // Add markers to the map
-    filteredHotspots.forEach(hotspot => {
-        const marker = L.marker([hotspot.coordinates.lat, hotspot.coordinates.lng], {
-            icon: this.getPollutionIcon(hotspot.pollutionLevel)
-        });
-
-        const popupContent = this.createPopupContent(hotspot);
-        marker.bindPopup(popupContent);
-
-        // Add to appropriate layers
-        this.markerLayers.all.addLayer(marker);
-        this.markerLayers[hotspot.pollutionLevel].addLayer(marker);
-    });
-
-    // Update hotspot cards
-    this.renderHotspotCards(filteredHotspots);
-
-    // Fit map bounds to show all markers if we have any
-    if (filteredHotspots.length > 0) {
-        const group = new L.featureGroup(filteredHotspots.map(hotspot => 
-            L.marker([hotspot.coordinates.lat, hotspot.coordinates.lng])
-        ));
-        this.map.fitBounds(group.getBounds().pad(0.1));
+        this.initMap();
+        this.renderHotspots();
     }
-}
 
-renderHotspotCards(filteredHotspots) {
-    const hotspotsGrid = document.getElementById('hotspotsGrid');
-    if (!hotspotsGrid) return;
+    initMap() {
+        // Initialize the map
+        this.map = L.map('goaMap').setView([15.5000, 73.8000], 10); // Center on Goa
 
-    if (filteredHotspots.length === 0) {
-        hotspotsGrid.innerHTML = `
-            <div class="text-center" style="grid-column: 1 / -1; padding: 3rem;">
-                <h3>No Pollution Reports</h3>
-                <p style="color: var(--muted-foreground);">No hotspots match your filter.</p>
+        // Add OpenStreetMap tiles
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+            maxZoom: 18,
+        }).addTo(this.map);
+
+        // Add scale control
+        L.control.scale().addTo(this.map);
+
+        // Create layer groups for different pollution levels
+        this.markerLayers = {
+            all: L.layerGroup().addTo(this.map),
+            critical: L.layerGroup(),
+            high: L.layerGroup(),
+            medium: L.layerGroup(),
+            low: L.layerGroup()
+        };
+
+        // Add layer control
+        this.initLayerControl();
+    }
+
+    initLayerControl() {
+        // Create layer control
+        const overlayMaps = {
+            "Critical Pollution": this.markerLayers.critical,
+            "High Pollution": this.markerLayers.high,
+            "Medium Pollution": this.markerLayers.medium,
+            "Low Pollution": this.markerLayers.low
+        };
+
+        L.control.layers(null, overlayMaps, {
+            collapsed: false,
+            position: 'topright'
+        }).addTo(this.map);
+    }
+
+    getPollutionIcon(level) {
+        const iconConfig = {
+            critical: {
+                color: '#dc2626',
+                icon: '🔥',
+                size: 30
+            },
+            high: {
+                color: '#ea580c',
+                icon: '⚠️',
+                size: 28
+            },
+            medium: {
+                color: '#d97706',
+                icon: '🔸',
+                size: 26
+            },
+            low: {
+                color: '#16a34a',
+                icon: '💚',
+                size: 24
+            }
+        };
+
+        const config = iconConfig[level] || iconConfig.medium;
+
+        return L.divIcon({
+            html: `
+                <div style="
+                    background: ${config.color};
+                    width: ${config.size}px;
+                    height: ${config.size}px;
+                    border-radius: 50%;
+                    border: 3px solid white;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 12px;
+                    color: white;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+                    animation: pulse 2s infinite;
+                ">
+                    ${config.icon}
+                </div>
+            `,
+            className: 'pollution-marker',
+            iconSize: [config.size, config.size],
+            iconAnchor: [config.size / 2, config.size / 2]
+        });
+    }
+
+    createPopupContent(hotspot) {
+        return `
+            <div class="pollution-popup">
+                <div class="popup-header">
+                    <div class="popup-dot" style="background: ${this.getPollutionColor(hotspot.pollutionLevel)}"></div>
+                    <h3 class="popup-title">${hotspot.location}</h3>
+                </div>
+                <div class="popup-details">
+                    <div class="popup-detail">
+                        <span>Type:</span>
+                        <span><strong>${hotspot.type}</strong></span>
+                    </div>
+                    <div class="popup-detail">
+                        <span>Severity:</span>
+                        <span><strong>${hotspot.pollutionLevel.toUpperCase()}</strong></span>
+                    </div>
+                    <div class="popup-detail">
+                        <span>Reports:</span>
+                        <span><strong>${hotspot.reports}</strong></span>
+                    </div>
+                    <div class="popup-detail">
+                        <span>Last Updated:</span>
+                        <span>${hotspot.lastUpdated}</span>
+                    </div>
+                    <div class="popup-detail">
+                        <span>Coordinates:</span>
+                        <span>${hotspot.coordinates.lat.toFixed(4)}, ${hotspot.coordinates.lng.toFixed(4)}</span>
+                    </div>
+                </div>
             </div>
         `;
-    } else {
-        hotspotsGrid.innerHTML = filteredHotspots.map(hotspot => `
-            <div class="hotspot-card" data-hotspot-id="${hotspot.id}">
-                <div class="hotspot-header">
-                    <div class="hotspot-location">
-                        <div class="hotspot-dot ${hotspot.pollutionLevel}"></div>
-                        <div class="hotspot-name">${hotspot.location}</div>
-                    </div>
-                    <span class="hotspot-level level-${hotspot.pollutionLevel}">${hotspot.pollutionLevel}</span>
-                </div>
-                <div class="hotspot-details">
-                    <div><strong>Type:</strong> ${hotspot.type}</div>
-                    <div><strong>Reports:</strong> ${hotspot.reports}</div>
-                    <div><strong>Last Updated:</strong> ${hotspot.lastUpdated}</div>
-                    <div><strong>Coordinates:</strong> ${hotspot.coordinates.lat.toFixed(4)}, ${hotspot.coordinates.lng.toFixed(4)}</div>
-                </div>
-                <button class="btn btn-outline btn-sm w-full mt-2 view-on-map-btn" 
-                        data-lat="${hotspot.coordinates.lat}" 
-                        data-lng="${hotspot.coordinates.lng}">
-                    View on Map
-                </button>
-            </div>
-        `).join('');
-
-        // Add click handlers for "View on Map" buttons
-        this.addMapNavigationHandlers();
     }
-}
 
-addMapNavigationHandlers() {
-    document.querySelectorAll('.view-on-map-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-            const lat = parseFloat(e.target.dataset.lat);
-            const lng = parseFloat(e.target.dataset.lng);
-            
-            this.map.setView([lat, lng], 15);
-            
-            // Open popup for the corresponding marker
-            this.markerLayers.all.eachLayer((layer) => {
-                const markerLat = layer.getLatLng().lat;
-                const markerLng = layer.getLatLng().lng;
+    getPollutionColor(level) {
+        const colors = {
+            critical: '#dc2626',
+            high: '#ea580c',
+            medium: '#d97706',
+            low: '#16a34a'
+        };
+        return colors[level] || '#6b7280';
+    }
+
+    renderHotspots(filter = 'all') {
+        // Clear existing markers from all layers
+        Object.values(this.markerLayers).forEach(layer => layer.clearLayers());
+
+        const filteredHotspots = filter === 'all' 
+            ? this.hotspots 
+            : this.hotspots.filter(spot => spot.pollutionLevel === filter);
+
+        // Add markers to the map
+        filteredHotspots.forEach(hotspot => {
+            const marker = L.marker([hotspot.coordinates.lat, hotspot.coordinates.lng], {
+                icon: this.getPollutionIcon(hotspot.pollutionLevel)
+            });
+
+            const popupContent = this.createPopupContent(hotspot);
+            marker.bindPopup(popupContent);
+
+            // Add to appropriate layers
+            this.markerLayers.all.addLayer(marker);
+            this.markerLayers[hotspot.pollutionLevel].addLayer(marker);
+        });
+
+        // Update hotspot cards
+        this.renderHotspotCards(filteredHotspots);
+
+        // Fit map bounds to show all markers if we have any
+        if (filteredHotspots.length > 0) {
+            const group = new L.featureGroup(filteredHotspots.map(hotspot => 
+                L.marker([hotspot.coordinates.lat, hotspot.coordinates.lng])
+            ));
+            this.map.fitBounds(group.getBounds().pad(0.1));
+        }
+    }
+
+    renderHotspotCards(filteredHotspots) {
+        const hotspotsGrid = document.getElementById('hotspotsGrid');
+        if (!hotspotsGrid) return;
+
+        if (filteredHotspots.length === 0) {
+            hotspotsGrid.innerHTML = `
+                <div class="text-center" style="grid-column: 1 / -1; padding: 3rem;">
+                    <h3>No Pollution Reports</h3>
+                    <p style="color: var(--muted-foreground);">No hotspots match your filter.</p>
+                </div>
+            `;
+        } else {
+            hotspotsGrid.innerHTML = filteredHotspots.map(hotspot => `
+                <div class="hotspot-card" data-hotspot-id="${hotspot.id}">
+                    <div class="hotspot-header">
+                        <div class="hotspot-location">
+                            <div class="hotspot-dot ${hotspot.pollutionLevel}"></div>
+                            <div class="hotspot-name">${hotspot.location}</div>
+                        </div>
+                        <span class="hotspot-level level-${hotspot.pollutionLevel}">${hotspot.pollutionLevel}</span>
+                    </div>
+                    <div class="hotspot-details">
+                        <div><strong>Type:</strong> ${hotspot.type}</div>
+                        <div><strong>Reports:</strong> ${hotspot.reports}</div>
+                        <div><strong>Last Updated:</strong> ${hotspot.lastUpdated}</div>
+                        <div><strong>Coordinates:</strong> ${hotspot.coordinates.lat.toFixed(4)}, ${hotspot.coordinates.lng.toFixed(4)}</div>
+                    </div>
+                    <button class="btn btn-outline btn-sm w-full mt-2 view-on-map-btn" 
+                            data-lat="${hotspot.coordinates.lat}" 
+                            data-lng="${hotspot.coordinates.lng}">
+                        View on Map
+                    </button>
+                </div>
+            `).join('');
+
+            // Add click handlers for "View on Map" buttons
+            this.addMapNavigationHandlers();
+        }
+    }
+
+    addMapNavigationHandlers() {
+        document.querySelectorAll('.view-on-map-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const lat = parseFloat(e.target.dataset.lat);
+                const lng = parseFloat(e.target.dataset.lng);
                 
-                if (Math.abs(markerLat - lat) < 0.001 && Math.abs(markerLng - lng) < 0.001) {
-                    layer.openPopup();
-                }
+                this.map.setView([lat, lng], 15);
+                
+                // Open popup for the corresponding marker
+                this.markerLayers.all.eachLayer((layer) => {
+                    const markerLat = layer.getLatLng().lat;
+                    const markerLng = layer.getLatLng().lng;
+                    
+                    if (Math.abs(markerLat - lat) < 0.001 && Math.abs(markerLng - lng) < 0.001) {
+                        layer.openPopup();
+                    }
+                });
             });
         });
-    });
-}
+    }
 
-handleHeatmapFilter(e) {
-    e.preventDefault();
+    handleHeatmapFilter(e) {
+        e.preventDefault();
 
-    // Remove active state from all filter buttons
-    document.querySelectorAll('[data-filter]').forEach(btn => {
-        btn.classList.remove('active');
-    });
+        // Remove active state from all filter buttons
+        document.querySelectorAll('[data-filter]').forEach(btn => {
+            btn.classList.remove('active');
+        });
 
-    // Add active state to clicked button
-    e.target.classList.add('active');
+        // Add active state to clicked button
+        e.target.classList.add('active');
 
-    const filter = e.target.getAttribute('data-filter');
-    this.renderHotspots(filter);
-}
-    // Missions Data & Functions
+        const filter = e.target.getAttribute('data-filter');
+        this.renderHotspots(filter);
+    }
+
+    // Missions Data & Functions (Static data - no database integration yet)
     loadMissions() {
         this.missions = [
             {
@@ -992,7 +980,7 @@ handleHeatmapFilter(e) {
         this.showToast(`You've joined "${mission.title}". Check your email for details.`, 'success');
     }
 
-    // Leaderboard Data & Functions
+    // Leaderboard Data & Functions (Static data)
     loadLeaderboard() {
         this.leaderboard = [
             {
@@ -1208,7 +1196,7 @@ handleHeatmapFilter(e) {
         if (totalTreesEl) this.animateNumber(totalTreesEl, totalTrees);
     }
 
-    // Policy Data & Functions
+    // Policy Data & Functions (Static data)
     loadPolicies() {
         this.policies = [
             {
@@ -1430,7 +1418,7 @@ handleHeatmapFilter(e) {
         if (planningEl) this.animateNumber(planningEl, statusCounts.planning || 0);
     }
 
-    // Experiences Data & Functions (Eco Guide)
+    // Experiences Data & Functions (Eco Guide - Static data)
     loadExperiences() {
         this.experiences = [
             {
