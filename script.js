@@ -110,6 +110,29 @@ class GoaEcoGuard {
 
         // Handle join form submission
         
+        // const joinForm = document.getElementById("joinForm");
+        // if (joinForm) {
+        //     joinForm.addEventListener("submit", async (e) => {
+        //         e.preventDefault();
+        //         const data = {
+        //             name: document.getElementById("joinName").value,
+        //             email: document.getElementById("joinEmail").value,
+        //             phone: document.getElementById("joinPhone").value
+        //         };
+
+        //         // Use the deployed backend
+        //         const res = await fetch(`${API_BASE}/api/join`, {
+        //             method: "POST",
+        //             headers: { "Content-Type": "application/json" },
+        //             body: JSON.stringify(data)
+        //         });
+
+        //         const result = await res.json();
+        //         alert(result.message);
+        //         if (joinModal) joinModal.style.display = "none";
+        //     });
+        // }
+
         const joinForm = document.getElementById("joinForm");
         if (joinForm) {
             joinForm.addEventListener("submit", async (e) => {
@@ -120,18 +143,39 @@ class GoaEcoGuard {
                     phone: document.getElementById("joinPhone").value
                 };
 
-                // Use the deployed backend
-                const res = await fetch(`${API_BASE}/api/join`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(data)
-                });
+                // Show loading state
+                const submitBtn = e.target.querySelector('button[type="submit"]');
+                const originalText = submitBtn.innerHTML;
+                submitBtn.innerHTML = 'Submitting...';
+                submitBtn.disabled = true;
 
-                const result = await res.json();
-                alert(result.message);
-                if (joinModal) joinModal.style.display = "none";
+                try {
+                    const res = await fetch(`${API_BASE}/api/join`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(data)
+                    });
+
+                    const result = await res.json();
+                    
+                    if (!res.ok) {
+                        throw new Error(result.error || 'Failed to join mission');
+                    }
+                    
+                    alert(result.message);
+                    if (joinModal) joinModal.style.display = "none";
+                    e.target.reset();
+                } catch (error) {
+                    console.error("Error joining mission:", error);
+                    alert(error.message || "Failed to join mission. Please try again.");
+                } finally {
+                    // Reset button state
+                    submitBtn.innerHTML = originalText;
+                    submitBtn.disabled = false;
+                }
             });
         }
+
 
         // Keyboard navigation
         document.addEventListener('keydown', (e) => {
@@ -302,35 +346,57 @@ class GoaEcoGuard {
         `).join('');
     }
 
-    handleReportSubmission(e) {
-        e.preventDefault();
-        
-        const location = document.getElementById('location').value;
-        const description = document.getElementById('description').value;
-        const image = document.getElementById('image').value;
+    // IMPROVED handleReportSubmission
+handleReportSubmission(e) {
+    e.preventDefault();
+    
+    const location = document.getElementById('location').value;
+    const description = document.getElementById('description').value;
+    const image = document.getElementById('image').value;
 
-        if (!location || !description) {
-            this.showToast('Please fill in location and description fields.', 'error');
-            return;
-        }
-
-        // Use the deployed backend
-        fetch(`${API_BASE}/api/report`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ location, description, image })
-        })
-        .then(res => res.json())
-        .then(result => {
-            this.showToast(result.message, 'success');
-            e.target.reset();
-            this.loadReportsFromDB(); // This will now fetch from your live backend
-        })
-        .catch((error) => {
-            console.error("Error submitting report:", error);
-            this.showToast("Error submitting report. Try again.", "error");
-        });
+    if (!location || !description) {
+        this.showToast('Please fill in location and description fields.', 'error');
+        return;
     }
+
+    // Show loading state
+    const submitBtn = e.target.querySelector('button[type="submit"]');
+    const originalText = submitBtn.innerHTML;
+    submitBtn.innerHTML = 'Submitting...';
+    submitBtn.disabled = true;
+
+    // Use the deployed backend
+    fetch(`${API_BASE}/api/report`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ location, description, image })
+    })
+    .then(async (res) => {
+        const data = await res.json();
+        
+        if (!res.ok) {
+            throw new Error(data.error || 'Failed to submit report');
+        }
+        
+        return data;
+    })
+    .then(result => {
+        this.showToast(result.message, 'success');
+        e.target.reset();
+        this.loadReportsFromDB();
+    })
+    .catch((error) => {
+        console.error("Error submitting report:", error);
+        this.showToast(error.message || "Error submitting report. Try again.", "error");
+    })
+    .finally(() => {
+        // Reset button state
+        submitBtn.innerHTML = originalText;
+        submitBtn.disabled = false;
+    });
+}
+
+
 
     // Heatmap functions
     loadHotspots() {
