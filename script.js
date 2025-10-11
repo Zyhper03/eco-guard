@@ -1,5 +1,7 @@
 // Goa Eco-Guard - JavaScript Application
 
+const API_BASE = 'https://eco-guard-backend.onrender.com';
+
 class GoaEcoGuard {
     constructor() {
         this.currentSection = 'home';
@@ -107,6 +109,7 @@ class GoaEcoGuard {
         }
 
         // Handle join form submission
+        
         const joinForm = document.getElementById("joinForm");
         if (joinForm) {
             joinForm.addEventListener("submit", async (e) => {
@@ -117,20 +120,16 @@ class GoaEcoGuard {
                     phone: document.getElementById("joinPhone").value
                 };
 
-                try {
-                    const res = await fetch("http://localhost:3000/api/join", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify(data)
-                    });
+                // Use the deployed backend
+                const res = await fetch(`${API_BASE}/api/join`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(data)
+                });
 
-                    const result = await res.json();
-                    alert(result.message);
-                    if (joinModal) joinModal.style.display = "none";
-                } catch (error) {
-                    console.error("Error joining mission:", error);
-                    alert("Failed to join mission. Please try again.");
-                }
+                const result = await res.json();
+                alert(result.message);
+                if (joinModal) joinModal.style.display = "none";
             });
         }
 
@@ -230,7 +229,7 @@ class GoaEcoGuard {
     // Reports Data & Functions
     async loadReportsFromDB() {
         try {
-            const res = await fetch("http://localhost:3000/api/reports");
+            const res = await fetch(`${API_BASE}/api/reports`);
             const data = await res.json();
             this.reports = data.map(r => ({
                 id: r.id,
@@ -244,8 +243,7 @@ class GoaEcoGuard {
             this.renderReports();
         } catch (error) {
             console.error("Error loading reports:", error);
-            this.showToast("Error loading reports from server.", "error");
-            // Fallback to sample data
+            // Fallback to sample data if backend is down
             this.loadSampleReports();
         }
     }
@@ -316,8 +314,8 @@ class GoaEcoGuard {
             return;
         }
 
-        // Send to backend
-        fetch("http://localhost:3000/api/report", {
+        // Use the deployed backend
+        fetch(`${API_BASE}/api/report`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ location, description, image })
@@ -326,7 +324,7 @@ class GoaEcoGuard {
         .then(result => {
             this.showToast(result.message, 'success');
             e.target.reset();
-            this.loadReportsFromDB(); // Reload updated list from DB
+            this.loadReportsFromDB(); // This will now fetch from your live backend
         })
         .catch((error) => {
             console.error("Error submitting report:", error);
