@@ -8,7 +8,7 @@ const app = express();
 // CORS configuration - UPDATE WITH YOUR ACTUAL NETLIFY URL
 app.use(cors({
     origin: [
-        'https://your-actual-netlify-site.netlify.app', // ⚠️ REPLACE THIS with your actual Netlify URL
+        'https://visionary-pony-ae1d1c.netlify.app/', // ⚠️ REPLACE THIS with your actual Netlify URL
         'http://localhost:3000',
         'http://localhost:3001',
         'https://goa-eco-guard.netlify.app' // Common Netlify pattern
