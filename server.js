@@ -8,7 +8,7 @@ const app = express();
 // CORS configuration
 app.use(cors({
     origin: [
-        'https://visionary-pony-ae1d1c.netlify.app',
+        'https://https://goaecoguard.netlify.app',
         'http://localhost:3000',
         'http://localhost:3001'
     ],
