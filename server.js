@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
 const cors = require('cors');
-const bcrypt = require('bcrypt');
+const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const sharp = require('sharp');
@@ -1196,7 +1196,30 @@ app.get('/api/experiences', async (req, res) => {
 /* ===============================
    START SERVER
 ================================ */
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 Goa Eco-Guard backend running on port ${PORT}`);
-});
+const DEFAULT_PORT = parseInt(process.env.PORT, 10) || 3000;
+
+function startServer(port = DEFAULT_PORT, attempts = 8) {
+  const server = app.listen(port, () => {
+    console.log(`🚀 Goa Eco-Guard backend running on port ${port}`);
+  });
+
+  server.on('error', (err) => {
+    if (err && err.code === 'EADDRINUSE' && attempts > 0) {
+      console.warn(`Port ${port} in use — trying ${port + 1} (attempts left: ${attempts - 1})`);
+      setTimeout(() => startServer(port + 1, attempts - 1), 200);
+    } else {
+      console.error('Server failed to start:', err);
+      process.exit(1);
+    }
+  });
+}
+
+// Allow skipping the HTTP listener when the service should not bind to a port
+// (useful when only deploying frontend to Netlify and using a remote backend).
+const SKIP_LISTEN = process.env.SKIP_LISTEN === 'true' || process.env.NO_LISTEN === '1';
+if (SKIP_LISTEN) {
+  console.log('SKIP_LISTEN enabled — HTTP server will not start.');
+  module.exports = app; // export app for tests or external runners
+} else {
+  startServer();
+}
