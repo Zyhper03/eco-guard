@@ -1,0 +1,11 @@
+[INFO] --- STARTING TROUBLESHOOT ---
+[INFO] 1. registering test user: admin_1768761636937@test.com
+[SUCCESS] Got User Token.
+[INFO] 2. Testing Submit Report...
+[INFO] 3. Testing Public GET Reports...
+[SUCCESS] Success. Got 5 reports.
+[INFO] Sample ID: 10
+[INFO] 4. Testing Report Stats...
+[SUCCESS] Success. Stats: {"total":5,"pending":5,"approved":0,"rejected":0}
+[INFO] --- FINISHED ---
+[INFO] Check troubleshoot_log.txt for details.

@@ -1,1673 +1,1505 @@
-// Goa Eco-Guard - JavaScript Application
+// ===============================
+// Goa Eco-Guard - Final Script
+// ===============================
 
+// Production API endpoint (Render)
 const API_BASE = 'https://eco-guard-backend.onrender.com';
 
+/* ===============================
+   AUTH MANAGER
+================================ */
+class AuthManager {
+    constructor() {
+        this.token = localStorage.getItem('ecoToken');
+        this.user = JSON.parse(localStorage.getItem('ecoUser')) || null;
+    }
+
+    isAuthenticated() {
+        return !!this.token && !!this.user;
+    }
+
+    isAdmin() {
+        return this.user?.role === 'admin';
+    }
+
+    getAuthHeader() {
+        return this.token ? { Authorization: `Bearer ${this.token}` } : {};
+    }
+
+    async login(email, password) {
+        const res = await fetch(`${API_BASE}/api/auth/login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password })
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Login failed');
+
+        this.token = data.token;
+        this.user = data.user;
+
+        localStorage.setItem('ecoToken', data.token);
+        localStorage.setItem('ecoUser', JSON.stringify(data.user));
+
+        return data;
+    }
+
+    async register(payload) {
+        const res = await fetch(`${API_BASE}/api/auth/register`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Registration failed');
+
+        this.token = data.token;
+        this.user = data.user;
+
+        localStorage.setItem('ecoToken', data.token);
+        localStorage.setItem('ecoUser', JSON.stringify(data.user));
+
+        return data;
+    }
+
+    logout() {
+        localStorage.clear();
+        window.location.reload();
+    }
+}
+
+/* ===============================
+   MAIN APPLICATION
+================================ */
 class GoaEcoGuard {
     constructor() {
-        this.currentSection = 'home';
-        this.joinedMissions = [];
-        this.reports = [];
-        this.missions = [];
-        this.hotspots = [];
-        this.leaderboard = [];
-        this.policies = [];
-        this.experiences = [];
+        this.auth = new AuthManager();
+        this.map = null;
+        this.markerLayers = {};
+        this.allHotspots = [];
+        this.hotspotsGrouped = {};
+        this.markersByLocation = {};
         this.init();
     }
 
+    async testBackendConnection() {
+        try {
+            console.log('Testing backend connection to:', API_BASE);
+
+            const response = await fetch(`${API_BASE}/api/health`, {
+                method: 'GET',
+                mode: 'cors',
+                cache: 'no-cache'
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                console.log('✅ Backend is reachable:', data);
+                return true;
+            } else {
+                console.error('❌ Backend responded with error:', response.status);
+                return false;
+            }
+        } catch (error) {
+            console.error('❌ Cannot connect to backend:', error.message);
+            console.log('Troubleshooting steps:');
+            console.log('1. Make sure backend is running: node server.js');
+            console.log('2. Check if port 3000 is available');
+            console.log('3. Try accessing:', `${API_BASE}/api/health` + ' in your browser');
+            return false;
+        }
+    }
+
+
+
+    getMarkerIcon(status) {
+        const colors = {
+            pending: '#f97316',   // orange
+            approved: '#2563eb',  // blue
+            resolved: '#16a34a',  // green
+            rejected: '#dc2626'   // red
+        };
+
+        return L.divIcon({
+            className: '',
+            html: `
+                <div style="
+                    width:18px;
+                    height:18px;
+                    background:${colors[status] || '#6b7280'};
+                    border-radius:50%;
+                    border:3px solid white;
+                    box-shadow:0 0 6px rgba(0,0,0,0.4);
+                "></div>
+            `,
+            iconSize: [18, 18],
+            iconAnchor: [9, 9]
+        });
+    }
+
+
+    /* ---------- INIT ---------- */
     init() {
         this.initEventListeners();
-        this.loadData();
+        this.checkAuthState();
+        this.loadAllData();
+        this.testBackendConnection();
         this.initIntersectionObserver();
+        this.initNavbarScroll();
+        this.initViewOnMapButtons();
         this.showToast('Welcome to Goa Eco-Guard!', 'success');
     }
 
-    // Event Listeners
-    initEventListeners() {
-        // Navigation
-        document.addEventListener('click', (e) => {
-            if (e.target.matches('[data-section]')) {
-                e.preventDefault();
-                const section = e.target.getAttribute('data-section');
-                this.navigateToSection(section);
+    /* ---------- NAVBAR SCROLL ---------- */
+    initNavbarScroll() {
+        const header = document.querySelector('.header');
+        if (!header) return;
+
+        let lastScrollY = 0;
+
+        window.addEventListener('scroll', () => {
+            const currentScrollY = window.scrollY;
+
+            // Add/remove scrolled class based on scroll position
+            if (currentScrollY > 50) {
+                header.classList.add('scrolled');
+            } else {
+                header.classList.remove('scrolled');
             }
-        });
 
-        // Mobile menu toggle
-        const mobileMenuBtn = document.getElementById('mobileMenuBtn');
-        const mobileNav = document.getElementById('mobileNav');
-        if (mobileMenuBtn) {
-            mobileMenuBtn.addEventListener('click', () => {
-                mobileMenuBtn.classList.toggle('active');
-                mobileNav.classList.toggle('active');
-            });
-        }
+            // Hide/show navbar based on scroll direction DISABLE FOR STICKY
+            // if (currentScrollY > lastScrollY && currentScrollY > 200) {
+            //    header.classList.add('hidden');
+            // } else {
+            //    header.classList.remove('hidden');
+            // }
 
-        // Forms
-        const reportingForm = document.getElementById('reportingForm');
-        if (reportingForm) {
-            reportingForm.addEventListener('submit', (e) => this.handleReportSubmission(e));
-        }
-
-        // Heatmap filters
-        document.addEventListener('click', (e) => {
-            if (e.target.matches('[data-filter]')) {
-                this.handleHeatmapFilter(e);
-            }
-        });
-
-        // Mission join buttons
-        document.addEventListener('click', (e) => {
-            if (e.target.matches('.mission-join-btn')) {
-                const missionId = e.target.dataset.missionId;
-                if (missionId) {
-                    this.openMissionModal(missionId);
-                } else {
-                    // Handle the case where data is in dataset attributes
-                    const missionData = {
-                        title: e.target.dataset.title,
-                        description: e.target.dataset.description,
-                        location: e.target.dataset.location,
-                        datetime: e.target.dataset.datetime,
-                        difficulty: e.target.dataset.difficulty
-                    };
-                    this.openMissionModalWithData(missionData);
-                }
-            }
-        });
-
-        // Modal close handlers
-        document.addEventListener('click', (e) => {
-            if (e.target.matches('.modal-close') || e.target.matches('.modal')) {
-                this.closeModal();
-            }
-        });
-
-        // JOIN MISSION FORM
-        const missionModal = document.getElementById("missionModal");
-        const joinModal = document.getElementById("joinModal");
-        const closeJoin = document.getElementById("closeJoin");
-        const confirmJoinBtn = document.getElementById("confirmJoinBtn");
-
-        if (confirmJoinBtn) {
-            confirmJoinBtn.addEventListener("click", () => {
-                if (missionModal) missionModal.style.display = "none";
-                if (joinModal) joinModal.style.display = "flex";
-            });
-        }
-
-        if (closeJoin) {
-            closeJoin.addEventListener("click", () => {
-                if (joinModal) joinModal.style.display = "none";
-            });
-        }
-
-        if (joinModal) {
-            window.addEventListener("click", (e) => {
-                if (e.target === joinModal) joinModal.style.display = "none";
-            });
-        }
-
-        // Handle join form submission
-        const joinForm = document.getElementById("joinForm");
-        if (joinForm) {
-            joinForm.addEventListener("submit", async (e) => {
-                e.preventDefault();
-                const data = {
-                    name: document.getElementById("joinName").value,
-                    email: document.getElementById("joinEmail").value,
-                    phone: document.getElementById("joinPhone").value
-                };
-
-                // Show loading state
-                const submitBtn = e.target.querySelector('button[type="submit"]');
-                const originalText = submitBtn.innerHTML;
-                submitBtn.innerHTML = 'Submitting...';
-                submitBtn.disabled = true;
-
-                try {
-                    const res = await fetch(`${API_BASE}/api/join`, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify(data)
-                    });
-
-                    const result = await res.json();
-                    
-                    if (!res.ok) {
-                        throw new Error(result.error || 'Failed to join mission');
-                    }
-                    
-                    alert(result.message);
-                    if (joinModal) joinModal.style.display = "none";
-                    e.target.reset();
-                } catch (error) {
-                    console.error("Error joining mission:", error);
-                    alert(error.message || "Failed to join mission. Please try again.");
-                } finally {
-                    // Reset button state
-                    submitBtn.innerHTML = originalText;
-                    submitBtn.disabled = false;
-                }
-            });
-        }
-
-        // Keyboard navigation
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') {
-                this.closeModal();
-                const mobileNav = document.getElementById('mobileNav');
-                const mobileMenuBtn = document.getElementById('mobileMenuBtn');
-                if (mobileNav && mobileNav.classList.contains('active')) {
-                    mobileNav.classList.remove('active');
-                    mobileMenuBtn.classList.remove('active');
-                }
-            }
+            lastScrollY = currentScrollY;
         });
     }
 
-    // Navigation
-    navigateToSection(sectionId) {
-        this.currentSection = sectionId;
-        
-        // Update active nav links
-        document.querySelectorAll('.nav-link').forEach(link => {
-            link.classList.remove('active');
-            if (link.getAttribute('data-section') === sectionId) {
-                link.classList.add('active');
+    /* ---------- AUTH UI ---------- */
+    checkAuthState() {
+        this.auth.isAuthenticated()
+            ? this.updateUIForUser()
+            : this.updateUIForGuest();
+    }
+
+    updateUIForUser() {
+        document.querySelector('.auth-buttons')?.remove();
+
+        const menu = document.createElement('div');
+        menu.className = 'user-menu';
+        menu.innerHTML = `
+            <div class="user-dropdown">
+                <button class="user-btn">${this.auth.user.name.split(' ')[0]}</button>
+                <div class="dropdown-content">
+                    <a href="#" id="logoutBtn">Logout</a>
+                </div>
+            </div>
+        `;
+        document.querySelector('.header-content')?.appendChild(menu);
+    }
+
+    updateUIForGuest() {
+        if (document.querySelector('.auth-buttons')) return;
+
+        const cta = document.querySelector('.header-cta');
+        cta.innerHTML = `
+            <div class="auth-buttons">
+                <button class="btn btn-outline btn-sm" id="loginBtn">Login</button>
+                <button class="btn btn-primary btn-sm" id="signupBtn">Sign Up</button>
+            </div>
+        `;
+    }
+
+    /* ---------- EVENTS ---------- */
+    initEventListeners() {
+        // Navigation buttons - scroll to sections
+        document.addEventListener('click', (e) => {
+            const section = e.target.closest('[data-section]');
+            if (section) {
+                const sectionId = section.getAttribute('data-section');
+                this.scrollToSection(sectionId);
+                // Close mobile menu if open
+                document.getElementById('mobileNav')?.classList.remove('active');
+                document.getElementById('mobileMenuBtn')?.classList.remove('active');
+                // Update active nav link
+                document.querySelectorAll('.nav-link').forEach(link => link.classList.remove('active'));
+                e.target.closest('.nav-link')?.classList.add('active');
+                return;
+            }
+
+            if (e.target.id === 'loginBtn') {
+                window.location.href = 'login/login.html';
+                return;
+            }
+            if (e.target.id === 'signupBtn') {
+                window.location.href = 'login/signup.html';
+                return;
+            }
+            if (e.target.id === 'logoutBtn') this.auth.logout();
+
+            // Mobile menu toggle
+            if (e.target.id === 'mobileMenuBtn' || e.target.closest('#mobileMenuBtn')) {
+                const mobileNav = document.getElementById('mobileNav');
+                const menuBtn = document.getElementById('mobileMenuBtn');
+                mobileNav?.classList.toggle('active');
+                menuBtn?.classList.toggle('active');
+                return;
+            }
+
+            // Mission modal handlers
+            if (e.target.classList.contains('modal-close') || e.target.classList.contains('close') || e.target.id === 'closeJoin') {
+                document.querySelectorAll('.modal').forEach(m => {
+                    m.classList.remove('active');
+                    m.classList.add('hidden');
+                });
+                return;
+            }
+
+            // Join mission button
+            if (e.target.classList.contains('join-mission-btn')) {
+                const missionId = e.target.dataset.missionId;
+                this.openMissionModal(missionId);
+                return;
+            }
+
+            // Confirm join mission
+            if (e.target.id === 'confirmJoinBtn') {
+                const missionId = e.target.dataset.missionId;
+                this.showJoinForm(missionId);
+                return;
+            }
+
+            // Submit join form
+            if (e.target.closest('#joinForm')) {
+                e.preventDefault();
+                this.handleJoinMission(e);
+                return;
+            }
+
+            // Know more button for eco spots
+            if (e.target.classList.contains('know-more-btn') || e.target.closest('.know-more-btn')) {
+                const btn = e.target.closest('.know-more-btn') || e.target;
+                const spotId = btn.dataset.spotId;
+                if (spotId) {
+                    this.openEcoSpotModal(parseInt(spotId));
+                }
+                return;
+            }
+
+            // Heatmap filter buttons
+            if (e.target.classList.contains('filter-btn')) {
+                const filterBtn = e.target;
+                const filter = filterBtn.dataset.filter;
+                
+                // Update active state
+                document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
+                filterBtn.classList.add('active');
+                
+                console.log('🔍 Filter applied:', filter);
+                
+                // Re-render map and cards with new filter
+                this.renderMarkers();
+                this.renderHotspotCards();
+                
+                // Fit map bounds to filtered markers
+                if (this.map && this.hotspotsGrouped) {
+                    setTimeout(() => {
+                        const filteredHotspots = Object.values(this.hotspotsGrouped).filter(h =>
+                            filter === 'all' || h.severity === filter
+                        );
+                        
+                        if (filteredHotspots.length > 0) {
+                            const bounds = L.latLngBounds();
+                            filteredHotspots.forEach(h => {
+                                bounds.extend([h.lat, h.lng]);
+                            });
+                            this.map.fitBounds(bounds, { padding: [50, 50], maxZoom: 13 });
+                        }
+                    }, 100);
+                }
+                return;
             }
         });
 
-        // Smooth scroll to section
+        // Login and signup forms are now on separate pages
+        document.getElementById('loginForm')?.addEventListener('submit', e => this.handleLogin(e));
+        document.getElementById('signupForm')?.addEventListener('submit', e => this.handleSignup(e));
+        document.getElementById('reportingForm')?.addEventListener('submit', e => this.submitReport(e));
+
+        // 📍 Get current location
+        const getLocationBtn = document.getElementById('getLocationBtn');
+        if (getLocationBtn) {
+            getLocationBtn.addEventListener('click', () => {
+                if (!navigator.geolocation) {
+                    this.showToast('Geolocation not supported', 'error');
+                    return;
+                }
+
+                this.showToast('Fetching location...', 'success');
+
+                navigator.geolocation.getCurrentPosition(
+                    (pos) => {
+                        document.getElementById('latitude').value = pos.coords.latitude;
+                        document.getElementById('longitude').value = pos.coords.longitude;
+
+                        document.getElementById('locationStatus').style.display = 'block';
+                        this.showToast('Location captured ✔', 'success');
+                    },
+                    () => {
+                        this.showToast('Location permission denied', 'error');
+                    },
+                    { enableHighAccuracy: true, timeout: 10000 }
+                );
+            });
+        }
+    }
+
+    scrollToSection(sectionId) {
         const section = document.getElementById(sectionId);
         if (section) {
-            const headerHeight = document.querySelector('.header').offsetHeight;
-            const sectionTop = section.offsetTop - headerHeight;
-            
-            window.scrollTo({
-                top: sectionTop,
-                behavior: 'smooth'
-            });
-        } else if (sectionId === 'home') {
-            window.scrollTo({
-                top: 0,
-                behavior: 'smooth'
-            });
-        }
-
-        // Close mobile menu
-        const mobileNav = document.getElementById('mobileNav');
-        const mobileMenuBtn = document.getElementById('mobileMenuBtn');
-        if (mobileNav && mobileNav.classList.contains('active')) {
-            mobileNav.classList.remove('active');
-            mobileMenuBtn.classList.remove('active');
+            section.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
     }
 
-    // Intersection Observer for active section highlighting
-    initIntersectionObserver() {
-        const sections = document.querySelectorAll('.section');
-        const options = {
-            root: null,
-            rootMargin: '-20% 0px -70% 0px',
-            threshold: 0
-        };
 
-        const observer = new IntersectionObserver((entries) => {
-            entries.forEach(entry => {
-                if (entry.isIntersecting) {
-                    const sectionId = entry.target.id;
-                    if (sectionId) {
-                        this.currentSection = sectionId;
-                        document.querySelectorAll('.nav-link').forEach(link => {
-                            link.classList.remove('active');
-                            if (link.getAttribute('data-section') === sectionId) {
-                                link.classList.add('active');
-                            }
-                        });
-                    }
-                }
-            });
-        }, options);
-
-        sections.forEach(section => {
-            observer.observe(section);
-        });
-    }
-
-    // Data Loading
-    loadData() {
-        this.loadReportsFromDB(); // Only this loads from DB
-        this.loadHotspots();      // Static data
-        this.loadMissions();      // Static data (for now)
-        this.loadLeaderboard();   // Static data
-        this.loadPolicies();      // Static data
-        this.loadExperiences();   // Static data
-    }
-
-    // Reports Data & Functions - FIXED VERSION
-    async loadReportsFromDB() {
-        try {
-            const res = await fetch(`${API_BASE}/api/reports`);
-            if (!res.ok) {
-                throw new Error('Failed to fetch reports');
-            }
-            const data = await res.json();
-            
-            // Use ONLY database data, no fallback to dummy data
-            if (data && data.length > 0) {
-                this.reports = data.map(r => ({
-                    id: r.id,
-                    location: r.location,
-                    description: r.description,
-                    image: r.image || 'https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=400&h=300&fit=crop',
-                    timestamp: this.formatTimestamp(r.created_at),
-                    status: r.status || 'pending',
-                    severity: 'medium'
-                }));
-            } else {
-                // If no reports in database, show empty state
-                this.reports = [];
-            }
-            this.renderReports();
-        } catch (error) {
-            console.error("Error loading reports:", error);
-            // Show empty state instead of dummy data
-            this.reports = [];
-            this.renderReports();
-            this.showToast('Unable to load reports. Please try again later.', 'error');
-        }
-    }
-
-    // Helper method to format timestamps
-    formatTimestamp(timestamp) {
-        if (!timestamp) return 'Recently';
-        
-        const now = new Date();
-        const reportTime = new Date(timestamp);
-        const diffMs = now - reportTime;
-        const diffMins = Math.floor(diffMs / 60000);
-        const diffHours = Math.floor(diffMs / 3600000);
-        const diffDays = Math.floor(diffMs / 86400000);
-        
-        if (diffMins < 1) return 'Just now';
-        if (diffMins < 60) return `${diffMins} minutes ago`;
-        if (diffHours < 24) return `${diffHours} hours ago`;
-        if (diffDays < 7) return `${diffDays} days ago`;
-        
-        return reportTime.toLocaleDateString();
-    }
-
-    renderReports() {
-        const reportsList = document.getElementById('reportsList');
-        if (!reportsList) return;
-
-        if (this.reports.length === 0) {
-            reportsList.innerHTML = `
-                <div class="text-center" style="padding: 2rem; color: var(--muted-foreground);">
-                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-bottom: 1rem;">
-                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                        <polyline points="14,2 14,8 20,8"/>
-                        <line x1="16" y1="13" x2="8" y2="13"/>
-                        <line x1="16" y1="17" x2="8" y2="17"/>
-                        <polyline points="10,9 9,9 8,9"/>
-                    </svg>
-                    <h3>No Reports Yet</h3>
-                    <p>Be the first to report an environmental issue in your area!</p>
-                </div>
-            `;
-        } else {
-            reportsList.innerHTML = this.reports.map(report => `
-                <div class="report-card">
-                    <div class="report-header">
-                        <img src="${report.image}" alt="Report evidence" class="report-image">
-                        <div class="report-info">
-                            <div class="report-location">${report.location}</div>
-                            <div class="report-description">${report.description}</div>
-                            <div class="report-meta">
-                                <span class="report-time">${report.timestamp}</span>
-                                <span class="report-status status-${report.status}">${report.status}</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `).join('');
-        }
-    }
-
-    // IMPROVED handleReportSubmission
-    handleReportSubmission(e) {
+    /* ---------- AUTH HANDLERS ---------- */
+    async handleLogin(e) {
         e.preventDefault();
-        
-        const location = document.getElementById('location').value;
-        const description = document.getElementById('description').value;
-        const image = document.getElementById('image').value;
 
-        if (!location || !description) {
-            this.showToast('Please fill in location and description fields.', 'error');
+        const email = loginEmail.value;
+        const password = loginPassword.value;
+
+        try {
+            const result = await this.auth.login(email, password);
+
+            // 🔐 Admin redirect
+            if (result.user.role === 'admin') {
+                window.location.href = 'admin/admin.html';
+                return;
+            }
+
+            this.closeModal();
+            this.checkAuthState();
+            this.loadAllData();
+            this.showToast('Login successful!', 'success');
+
+        } catch (err) {
+            this.showToast(err.message, 'error');
+        }
+    }
+
+    async handleSignup(e) {
+        e.preventDefault();
+
+        if (signupPassword.value !== confirmPassword.value) {
+            this.showToast('Passwords do not match', 'error');
             return;
         }
 
-        // Show loading state
-        const submitBtn = e.target.querySelector('button[type="submit"]');
-        const originalText = submitBtn.innerHTML;
-        submitBtn.innerHTML = 'Submitting...';
-        submitBtn.disabled = true;
+        try {
+            await this.auth.register({
+                name: signupName.value,
+                email: signupEmail.value,
+                phone: signupPhone.value,
+                password: signupPassword.value
+            });
 
-        // Use the deployed backend
-        fetch(`${API_BASE}/api/report`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ location, description, image })
-        })
-        .then(async (res) => {
+            this.closeModal();
+            this.checkAuthState();
+            this.showToast('Account created!', 'success');
+
+        } catch (err) {
+            this.showToast(err.message, 'error');
+        }
+    }
+
+    /* ---------- DATA LOADING ---------- */
+    loadAllData() {
+        this.loadReports();
+        this.loadHotspots();
+        this.loadMissions();
+        // Leaderboard temporarily disabled
+        // this.loadLeaderboard();
+        this.loadPolicies();
+        this.loadExperiences();
+        this.loadEcoSpots();
+    }
+
+    async fetchJSON(endpoint, auth = false) {
+        try {
+            const res = await fetch(`${API_BASE}${endpoint}`, {
+                headers: auth ? this.auth.getAuthHeader() : {}
+            });
+            if (!res.ok) {
+                console.warn(`API ${endpoint} returned status ${res.status}`);
+                return [];
+            }
             const data = await res.json();
-            
+            console.log(`API ${endpoint} response:`, data);
+            // Ensure we always return an array for list endpoints
+            if (data === null || data === undefined) {
+                console.warn(`API ${endpoint} returned null/undefined`);
+                return [];
+            }
+            return Array.isArray(data) ? data : (data || []);
+        } catch (err) {
+            console.error(`Error fetching ${endpoint}:`, err);
+            return [];
+        }
+    }
+
+    /* ---------- REPORTS ---------- */
+    async loadReports() {
+        try {
+            this.reports = await this.fetchJSON('/api/reports');
+            console.log('Loaded reports:', this.reports);
+            // Ensure reports is always an array
+            if (!Array.isArray(this.reports)) {
+                console.warn('Reports is not an array:', typeof this.reports, this.reports);
+                this.reports = [];
+            }
+            this.renderReports();
+        } catch (err) {
+            console.error('Error loading reports:', err);
+            this.reports = [];
+            this.renderReports();
+        }
+    }
+
+    async submitReport(e) {
+        e.preventDefault();
+        if (!this.auth.isAuthenticated()) {
+            window.location.href = 'login/login.html';
+            return;
+        }
+
+        const formData = new FormData(e.target);
+
+        const lat = formData.get('latitude');
+        const lng = formData.get('longitude');
+
+        if (!lat || !lng) {
+            this.showToast('Please use current location before submitting', 'error');
+            return;
+        }
+
+        try {
+            const res = await fetch(`${API_BASE}/api/report`, {
+                method: 'POST',
+                headers: this.auth.getAuthHeader(),
+                body: formData
+            });
+
+            const data = await res.json();
+
             if (!res.ok) {
                 throw new Error(data.error || 'Failed to submit report');
             }
-            
-            return data;
-        })
-        .then(result => {
-            this.showToast(result.message, 'success');
+
+            this.showToast('Report submitted successfully!', 'success');
             e.target.reset();
-            this.loadReportsFromDB(); // Reload from database
-        })
-        .catch((error) => {
-            console.error("Error submitting report:", error);
-            this.showToast(error.message || "Error submitting report. Try again.", "error");
-        })
-        .finally(() => {
-            // Reset button state
-            submitBtn.innerHTML = originalText;
-            submitBtn.disabled = false;
-        });
+            document.getElementById('locationStatus').style.display = 'none';
+            document.getElementById('imagePreview').innerHTML = '';
+            document.getElementById('imagePreview').style.display = 'none';
+            document.getElementById('uploadArea').style.display = 'flex';
+
+            // ✅ UPDATE BOTH
+            this.loadReports();
+            this.loadHotspots(); // 🔥 THIS MAKES MAP LIVE
+        } catch (err) {
+            this.showToast(err.message || 'Failed to submit report', 'error');
+        }
     }
 
-    // Heatmap functions
-    loadHotspots() {
-        this.hotspots = [
-            {
-                id: '1',
-                location: 'Baga Beach North',
-                coordinates: { lat: 15.5579, lng: 73.7557 },
-                pollutionLevel: 'high',
-                type: 'Plastic Waste',
-                lastUpdated: '2 hours ago',
-                reports: 8,
-                severity: 75
-            },
-            {
-                id: '2',
-                location: 'Mandovi River - Ferry Terminal',
-                coordinates: { lat: 15.4929, lng: 73.8278 },
-                pollutionLevel: 'critical',
-                type: 'Oil Spill',
-                lastUpdated: '4 hours ago',
-                reports: 15,
-                severity: 90
-            },
-            {
-                id: '3',
-                location: 'Colva Beach South',
-                coordinates: { lat: 15.2798, lng: 73.9111 },
-                pollutionLevel: 'medium',
-                type: 'Construction Debris',
-                lastUpdated: '1 day ago',
-                reports: 3,
-                severity: 45
-            },
-            {
-                id: '4',
-                location: 'Anjuna Beach',
-                coordinates: { lat: 15.5739, lng: 73.7373 },
-                pollutionLevel: 'low',
-                type: 'Litter',
-                lastUpdated: '2 days ago',
-                reports: 2,
-                severity: 20
-            },
-            {
-                id: '5',
-                location: 'Chapora River Mouth',
-                coordinates: { lat: 15.6064, lng: 73.7411 },
-                pollutionLevel: 'high',
-                type: 'Sewage Discharge',
-                lastUpdated: '6 hours ago',
-                reports: 6,
-                severity: 65
-            },
-            {
-                id: '6',
-                location: 'Calangute Beach Central',
-                coordinates: { lat: 15.5435, lng: 73.7538 },
-                pollutionLevel: 'medium',
-                type: 'Food Waste',
-                lastUpdated: '12 hours ago',
-                reports: 4,
-                severity: 40
-            },
-            {
-                id: '7',
-                location: 'Palolem Beach',
-                coordinates: { lat: 15.0106, lng: 74.0238 },
-                pollutionLevel: 'low',
-                type: 'Plastic Bottles',
-                lastUpdated: '3 days ago',
-                reports: 3,
-                severity: 25
-            },
-            {
-                id: '8',
-                location: 'Morjim Beach',
-                coordinates: { lat: 15.6304, lng: 73.7398 },
-                pollutionLevel: 'critical',
-                type: 'Industrial Waste',
-                lastUpdated: '1 hour ago',
-                reports: 12,
-                severity: 85
-            }
-        ];
+    renderReports() {
+        const container = document.getElementById('reportsList');
+        if (!container) {
+            console.warn('⚠️ reportsList container not found');
+            return;
+        }
 
-        this.initMap();
-        this.renderHotspots();
+        // Ensure reports is an array before accessing length
+        if (!this.reports || !Array.isArray(this.reports)) {
+            console.warn('⚠️ Reports is not an array:', typeof this.reports, this.reports);
+            this.reports = [];
+        }
+
+        console.log(`🎨 Rendering ${this.reports.length} reports`);
+
+        if (this.reports.length > 0) {
+            console.log('📋 First report:', this.reports[0]);
+        }
+
+        // helper to format created_at safely
+        const formatReportTime = (ts) => {
+            if (!ts) return 'Unknown time';
+            const d = new Date(ts);
+            if (isNaN(d)) return ts;
+            return d.toLocaleString();
+        };
+
+        const escapeHtml = (s = '') => String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+
+        container.innerHTML = this.reports.length
+            ? this.reports.map(r => {
+                const status = (r.status || 'pending').toLowerCase();
+                const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
+                const statusClass = `status-${status}`;
+                const timeStr = formatReportTime(r.created_at || r.createdAt || r.timestamp);
+
+                return `
+                <div class="report-card ${statusClass}">
+                    <div class="report-header">
+                        ${r.image ? `<img src="${API_BASE}/uploads/${encodeURIComponent(r.image)}" alt="${escapeHtml(r.location || 'Report')}" class="report-image">` : `<div class="report-image-placeholder">📷</div>`}
+                        <div class="report-info">
+                            <div class="report-location">${escapeHtml(r.location || 'Location not specified')}</div>
+                            <div class="report-description">${escapeHtml(r.description || 'No description')}</div>
+                            <div class="report-meta">
+                                <div class="report-time">${escapeHtml(timeStr)}</div>
+                                <div class="report-status ${escapeHtml(status)}">${escapeHtml(statusLabel)}</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+            }).join('')
+            : `<p class="text-center">No reports yet.</p>`;
+    }
+
+
+
+    /* ---------- HEATMAP ---------- */
+    async loadHotspots() {
+        try {
+            // Show loading state
+            const loadingEl = document.querySelector('.map-loading');
+            if (loadingEl) loadingEl.classList.remove('hidden');
+
+            // Fetch real reports data from backend
+            const reports = await this.fetchJSON('/api/reports');
+            console.log('📍 Reports fetched:', reports.length);
+
+            // Convert reports to hotspots format with severity mapping
+            this.allHotspots = (reports || []).map(r => ({
+                id: r.id,
+                location: r.location || 'Unknown Location',
+                lat: parseFloat(r.latitude),
+                lng: parseFloat(r.longitude),
+                description: r.description,
+                severity: this.getReportSeverity(r.severity),
+                status: r.status || 'pending',
+                created_at: r.created_at,
+                image: r.image
+            })).filter(h => !isNaN(h.lat) && !isNaN(h.lng));
+
+            // Group by location to get report counts
+            this.hotspotsGrouped = this.groupHotspotsByLocation(this.allHotspots);
+            
+            console.log('🗺️ Hotspots ready:', this.allHotspots.length, 'reports,', Object.keys(this.hotspotsGrouped).length, 'unique locations');
+
+            // Initialize map with real data
+            this.initMap();
+            
+            // Render hotspot cards
+            this.renderHotspotCards();
+
+            // Hide loading state
+            if (loadingEl) loadingEl.classList.add('hidden');
+        } catch (err) {
+            console.error('Error loading hotspots:', err);
+            const loadingEl = document.querySelector('.map-loading');
+            if (loadingEl) loadingEl.classList.add('hidden');
+            this.initMap();
+        }
+
+        // Auto-refresh every 60 seconds
+        setInterval(() => {
+            if (this.map) {
+                this.refreshMap();
+            }
+        }, 60000);
+    }
+
+    groupHotspotsByLocation(hotspots) {
+        const grouped = {};
+        hotspots.forEach(h => {
+            const key = `${h.lat},${h.lng}`;
+            if (!grouped[key]) {
+                grouped[key] = {
+                    location: h.location,
+                    lat: h.lat,
+                    lng: h.lng,
+                    severity: h.severity,
+                    reports: [],
+                    count: 0
+                };
+            }
+            grouped[key].reports.push(h);
+            grouped[key].count = grouped[key].reports.length;
+            // Use highest severity
+            if (this.getSeverityLevel(h.severity) > this.getSeverityLevel(grouped[key].severity)) {
+                grouped[key].severity = h.severity;
+            }
+        });
+        return grouped;
+    }
+
+    getSeverityLevel(severity) {
+        const levels = { 'critical': 4, 'high': 3, 'medium': 2, 'low': 1 };
+        return levels[severity?.toLowerCase()] || 0;
+    }
+
+    getReportSeverity(severity) {
+        if (!severity) return 'low';
+        const s = severity.toLowerCase();
+        if (s.includes('critical') || s.includes('emergency')) return 'critical';
+        if (s.includes('high') || s.includes('severe')) return 'high';
+        if (s.includes('medium') || s.includes('moderate')) return 'medium';
+        return 'low';
     }
 
     initMap() {
-        // Initialize the map
-        this.map = L.map('goaMap').setView([15.5000, 73.8000], 10); // Center on Goa
+        if (this.map) {
+            this.renderMarkers();
+            return;
+        }
 
-        // Add OpenStreetMap tiles
+        const mapElement = document.getElementById('goaMap');
+        if (!mapElement) return;
+
+        // Center map on Goa with proper coordinates
+        this.map = L.map('goaMap', {
+            scrollWheelZoom: true,
+            zoomAnimation: true
+        }).setView([15.5, 73.8], 9);
+
+        // Add tile layer
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
             maxZoom: 18,
+            attribution: '© OpenStreetMap contributors'
         }).addTo(this.map);
 
-        // Add scale control
-        L.control.scale().addTo(this.map);
-
-        // Create layer groups for different pollution levels
+        // Initialize layer groups for filtering
         this.markerLayers = {
             all: L.layerGroup().addTo(this.map),
-            critical: L.layerGroup(),
             high: L.layerGroup(),
             medium: L.layerGroup(),
             low: L.layerGroup()
         };
 
-        // Add layer control
-        this.initLayerControl();
+        // Store markers by location key for easy access
+        this.markersByLocation = {};
+
+        this.renderMarkers();
+
+        // Fit bounds if we have markers
+        if (this.allHotspots && this.allHotspots.length > 0) {
+            setTimeout(() => this.fitMapBounds(), 500);
+        }
     }
 
-    initLayerControl() {
-        // Create layer control
-        const overlayMaps = {
-            "Critical Pollution": this.markerLayers.critical,
-            "High Pollution": this.markerLayers.high,
-            "Medium Pollution": this.markerLayers.medium,
-            "Low Pollution": this.markerLayers.low
-        };
+    fitMapBounds() {
+        if (!this.map || !this.allHotspots || this.allHotspots.length === 0) return;
 
-        L.control.layers(null, overlayMaps, {
-            collapsed: false,
-            position: 'topright'
-        }).addTo(this.map);
+        const bounds = L.latLngBounds();
+        this.allHotspots.forEach(h => {
+            bounds.extend([h.lat, h.lng]);
+        });
+
+        // Add padding
+        this.map.fitBounds(bounds, { padding: [50, 50], maxZoom: 13 });
     }
 
-    getPollutionIcon(level) {
-        const iconConfig = {
-            critical: {
-                color: '#dc2626',
-                icon: '🔥',
-                size: 30
-            },
-            high: {
-                color: '#ea580c',
-                icon: '⚠️',
-                size: 28
-            },
-            medium: {
-                color: '#d97706',
-                icon: '🔸',
-                size: 26
-            },
-            low: {
-                color: '#16a34a',
-                icon: '💚',
-                size: 24
-            }
+    async refreshMap() {
+        console.log('🔄 Refreshing map data...');
+        try {
+            const reports = await this.fetchJSON('/api/reports');
+            
+            this.allHotspots = (reports || []).map(r => ({
+                id: r.id,
+                location: r.location || 'Unknown Location',
+                lat: parseFloat(r.latitude),
+                lng: parseFloat(r.longitude),
+                description: r.description,
+                severity: this.getReportSeverity(r.severity),
+                status: r.status || 'pending',
+                created_at: r.created_at,
+                image: r.image
+            })).filter(h => !isNaN(h.lat) && !isNaN(h.lng));
+
+            this.hotspotsGrouped = this.groupHotspotsByLocation(this.allHotspots);
+            
+            // Preserve current filter
+            const activeFilter = document.querySelector('.filter-btn.active')?.dataset.filter || 'all';
+            
+            this.renderMarkers();
+            this.renderHotspotCards();
+            
+            console.log('✅ Map refreshed with', this.allHotspots.length, 'reports');
+        } catch (err) {
+            console.error('Error refreshing map:', err);
+        }
+    }
+
+    getMarkerIcon(severity) {
+        const colors = {
+            'critical': '#ef4444',
+            'high': '#f97316',
+            'medium': '#eab308',
+            'low': '#22c55e'
         };
 
-        const config = iconConfig[level] || iconConfig.medium;
+        const color = colors[severity] || '#6b7280';
 
         return L.divIcon({
-            html: `
-                <div style="
-                    background: ${config.color};
-                    width: ${config.size}px;
-                    height: ${config.size}px;
-                    border-radius: 50%;
-                    border: 3px solid white;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    font-size: 12px;
-                    color: white;
-                    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-                    animation: pulse 2s infinite;
-                ">
-                    ${config.icon}
-                </div>
-            `,
-            className: 'pollution-marker',
-            iconSize: [config.size, config.size],
-            iconAnchor: [config.size / 2, config.size / 2]
+            html: `<div class="custom-marker ${severity}">●</div>`,
+            className: '',
+            iconSize: [32, 32],
+            iconAnchor: [16, 16],
+            popupAnchor: [0, -16]
         });
     }
 
-    createPopupContent(hotspot) {
-        return `
-            <div class="pollution-popup">
-                <div class="popup-header">
-                    <div class="popup-dot" style="background: ${this.getPollutionColor(hotspot.pollutionLevel)}"></div>
-                    <h3 class="popup-title">${hotspot.location}</h3>
-                </div>
-                <div class="popup-details">
-                    <div class="popup-detail">
-                        <span>Type:</span>
-                        <span><strong>${hotspot.type}</strong></span>
-                    </div>
-                    <div class="popup-detail">
-                        <span>Severity:</span>
-                        <span><strong>${hotspot.pollutionLevel.toUpperCase()}</strong></span>
-                    </div>
-                    <div class="popup-detail">
-                        <span>Reports:</span>
-                        <span><strong>${hotspot.reports}</strong></span>
-                    </div>
-                    <div class="popup-detail">
-                        <span>Last Updated:</span>
-                        <span>${hotspot.lastUpdated}</span>
-                    </div>
-                    <div class="popup-detail">
-                        <span>Coordinates:</span>
-                        <span>${hotspot.coordinates.lat.toFixed(4)}, ${hotspot.coordinates.lng.toFixed(4)}</span>
-                    </div>
-                </div>
-            </div>
-        `;
-    }
+    renderMarkers() {
+        if (!this.map) this.initMap();
+        if (!this.hotspotsGrouped || Object.keys(this.hotspotsGrouped).length === 0) {
+            console.log('⚠️ No hotspots to render');
+            return;
+        }
 
-    getPollutionColor(level) {
-        const colors = {
-            critical: '#dc2626',
-            high: '#ea580c',
-            medium: '#d97706',
-            low: '#16a34a'
-        };
-        return colors[level] || '#6b7280';
-    }
-
-    renderHotspots(filter = 'all') {
-        // Clear existing markers from all layers
+        // Clear old markers
         Object.values(this.markerLayers).forEach(layer => layer.clearLayers());
+        this.markersByLocation = {};
 
-        const filteredHotspots = filter === 'all' 
-            ? this.hotspots 
-            : this.hotspots.filter(spot => spot.pollutionLevel === filter);
+        // Get active filter
+        const activeFilter = document.querySelector('.filter-btn.active')?.dataset.filter || 'all';
 
-        // Add markers to the map
-        filteredHotspots.forEach(hotspot => {
-            const marker = L.marker([hotspot.coordinates.lat, hotspot.coordinates.lng], {
-                icon: this.getPollutionIcon(hotspot.pollutionLevel)
+        Object.entries(this.hotspotsGrouped).forEach(([key, hotspot]) => {
+            // Skip if doesn't match active filter
+            if (activeFilter !== 'all' && hotspot.severity !== activeFilter) {
+                return;
+            }
+
+            const marker = L.marker([hotspot.lat, hotspot.lng], {
+                icon: this.getMarkerIcon(hotspot.severity)
             });
 
-            const popupContent = this.createPopupContent(hotspot);
-            marker.bindPopup(popupContent);
+            // Store marker for easy access
+            this.markersByLocation[key] = { marker, hotspot };
 
-            // Add to appropriate layers
-            this.markerLayers.all.addLayer(marker);
-            this.markerLayers[hotspot.pollutionLevel].addLayer(marker);
-        });
-
-        // Update hotspot cards
-        this.renderHotspotCards(filteredHotspots);
-
-        // Fit map bounds to show all markers if we have any
-        if (filteredHotspots.length > 0) {
-            const group = new L.featureGroup(filteredHotspots.map(hotspot => 
-                L.marker([hotspot.coordinates.lat, hotspot.coordinates.lng])
-            ));
-            this.map.fitBounds(group.getBounds().pad(0.1));
-        }
-    }
-
-    renderHotspotCards(filteredHotspots) {
-        const hotspotsGrid = document.getElementById('hotspotsGrid');
-        if (!hotspotsGrid) return;
-
-        if (filteredHotspots.length === 0) {
-            hotspotsGrid.innerHTML = `
-                <div class="text-center" style="grid-column: 1 / -1; padding: 3rem;">
-                    <h3>No Pollution Reports</h3>
-                    <p style="color: var(--muted-foreground);">No hotspots match your filter.</p>
+            // Create custom popup with better styling
+            const lastUpdated = new Date(hotspot.reports[0]?.created_at).toLocaleDateString();
+            const popupContent = `
+                <div class="pollution-popup">
+                    <div class="popup-header">
+                        <div class="popup-dot ${hotspot.severity}"></div>
+                        <div>
+                            <p class="popup-title">${this.escapeHtml(hotspot.location)}</p>
+                        </div>
+                    </div>
+                    <div class="popup-details">
+                        <div class="popup-detail">
+                            <span class="popup-label">Severity:</span>
+                            <span class="popup-value">${hotspot.severity.charAt(0).toUpperCase() + hotspot.severity.slice(1)}</span>
+                        </div>
+                        <div class="popup-detail">
+                            <span class="popup-label">Reports:</span>
+                            <span class="popup-value">${hotspot.count}</span>
+                        </div>
+                        <div class="popup-detail">
+                            <span class="popup-label">Coordinates:</span>
+                            <span class="popup-value">${hotspot.lat.toFixed(4)}, ${hotspot.lng.toFixed(4)}</span>
+                        </div>
+                        <div class="popup-detail">
+                            <span class="popup-label">Last Updated:</span>
+                            <span class="popup-value">${lastUpdated}</span>
+                        </div>
+                    </div>
                 </div>
             `;
-        } else {
-            hotspotsGrid.innerHTML = filteredHotspots.map(hotspot => `
-                <div class="hotspot-card" data-hotspot-id="${hotspot.id}">
-                    <div class="hotspot-header">
-                        <div class="hotspot-location">
-                            <div class="hotspot-dot ${hotspot.pollutionLevel}"></div>
-                            <div class="hotspot-name">${hotspot.location}</div>
-                        </div>
-                        <span class="hotspot-level level-${hotspot.pollutionLevel}">${hotspot.pollutionLevel}</span>
-                    </div>
-                    <div class="hotspot-details">
-                        <div><strong>Type:</strong> ${hotspot.type}</div>
-                        <div><strong>Reports:</strong> ${hotspot.reports}</div>
-                        <div><strong>Last Updated:</strong> ${hotspot.lastUpdated}</div>
-                        <div><strong>Coordinates:</strong> ${hotspot.coordinates.lat.toFixed(4)}, ${hotspot.coordinates.lng.toFixed(4)}</div>
-                    </div>
-                    <button class="btn btn-outline btn-sm w-full mt-2 view-on-map-btn" 
-                            data-lat="${hotspot.coordinates.lat}" 
-                            data-lng="${hotspot.coordinates.lng}">
-                        View on Map
-                    </button>
-                </div>
-            `).join('');
 
-            // Add click handlers for "View on Map" buttons
-            this.addMapNavigationHandlers();
-        }
-    }
-
-    addMapNavigationHandlers() {
-        document.querySelectorAll('.view-on-map-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const lat = parseFloat(e.target.dataset.lat);
-                const lng = parseFloat(e.target.dataset.lng);
-                
-                this.map.setView([lat, lng], 15);
-                
-                // Open popup for the corresponding marker
-                this.markerLayers.all.eachLayer((layer) => {
-                    const markerLat = layer.getLatLng().lat;
-                    const markerLng = layer.getLatLng().lng;
-                    
-                    if (Math.abs(markerLat - lat) < 0.001 && Math.abs(markerLng - lng) < 0.001) {
-                        layer.openPopup();
-                    }
-                });
-            });
-        });
-    }
-
-    handleHeatmapFilter(e) {
-        e.preventDefault();
-
-        // Remove active state from all filter buttons
-        document.querySelectorAll('[data-filter]').forEach(btn => {
-            btn.classList.remove('active');
-        });
-
-        // Add active state to clicked button
-        e.target.classList.add('active');
-
-        const filter = e.target.getAttribute('data-filter');
-        this.renderHotspots(filter);
-    }
-
-    // Missions Data & Functions (Static data - no database integration yet)
-    loadMissions() {
-        this.missions = [
-            {
-                id: '1',
-                title: 'Beach Clean-up at Baga',
-                description: 'Join us for a morning beach cleanup to remove plastic waste and restore the natural beauty of Goa\'s most popular beach.',
-                date: 'Dec 25, 2024',
-                time: '7:00 AM - 10:00 AM',
-                location: 'Baga Beach, North Goa',
-                participants: 23,
-                maxParticipants: 50,
-                type: 'cleanup',
-                difficulty: 'easy',
-                image: 'https://images.unsplash.com/photo-1582408921715-18e7806365c1?w=400&h=300&fit=crop'
-            },
-            {
-                id: '2',
-                title: 'Tree Plantation at Mollem',
-                description: 'Help us plant native species in the Western Ghats buffer zone to restore forest cover and protect biodiversity.',
-                date: 'Dec 28, 2024',
-                time: '6:00 AM - 12:00 PM',
-                location: 'Mollem National Park',
-                participants: 15,
-                maxParticipants: 30,
-                type: 'plantation',
-                difficulty: 'medium',
-                image: 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?w=400&h=300&fit=crop'
-            },
-            {
-                id: '3',
-                title: 'Plastic-Free Drive in Panjim',
-                description: 'Awareness campaign to promote eco-friendly alternatives and educate locals about plastic pollution impact.',
-                date: 'Jan 2, 2025',
-                time: '4:00 PM - 7:00 PM',
-                location: 'Panjim City Center',
-                participants: 8,
-                maxParticipants: 25,
-                type: 'awareness',
-                difficulty: 'easy',
-                image: 'https://images.unsplash.com/photo-1532996122724-e3c354a0b15b?w=400&h=300&fit=crop'
-            },
-            {
-                id: '4',
-                title: 'Turtle Conservation Program',
-                description: 'Night patrol and protection of Olive Ridley turtle nesting sites along Goa\'s coastline during nesting season.',
-                date: 'Jan 5, 2025',
-                time: '8:00 PM - 2:00 AM',
-                location: 'Morjim Beach',
-                participants: 6,
-                maxParticipants: 15,
-                type: 'wildlife',
-                difficulty: 'hard',
-                image: 'https://images.unsplash.com/photo-1544551763-46a013bb70d5?w=400&h=300&fit=crop'
-            },
-            {
-                id: '5',
-                title: 'Mangrove Restoration',
-                description: 'Restore vital mangrove ecosystems by planting saplings and removing invasive species along the coastline.',
-                date: 'Jan 8, 2025',
-                time: '7:30 AM - 11:30 AM',
-                location: 'Zuari River Estuary',
-                participants: 12,
-                maxParticipants: 20,
-                type: 'plantation',
-                difficulty: 'medium',
-                image: 'https://images.unsplash.com/photo-1509635022432-0220ac12960b?w=400&h=300&fit=crop'
-            },
-            {
-                id: '6',
-                title: 'River Cleanup Drive',
-                description: 'Community effort to clean the Mandovi River and install waste collection points to prevent future pollution.',
-                date: 'Jan 12, 2025',
-                time: '8:00 AM - 1:00 PM',
-                location: 'Mandovi Riverfront',
-                participants: 19,
-                maxParticipants: 40,
-                type: 'cleanup',
-                difficulty: 'easy',
-                image: 'https://images.unsplash.com/photo-1547036967-23d11aacaee0?w=400&h=300&fit=crop'
+            marker.bindPopup(popupContent);
+            
+            this.markerLayers.all.addLayer(marker);
+            if (this.markerLayers[hotspot.severity]) {
+                this.markerLayers[hotspot.severity].addLayer(marker);
             }
-        ];
+        });
 
+        console.log('📌 Rendered markers for', Object.keys(this.markersByLocation).length, 'locations');
+    }
+
+    renderHotspotCards() {
+        const container = document.getElementById('hotspotsGrid');
+        if (!container || !this.hotspotsGrouped) return;
+
+        // Get active filter
+        const activeFilter = document.querySelector('.filter-btn.active')?.dataset.filter || 'all';
+
+        // Filter hotspots based on active filter
+        const filteredHotspots = Object.values(this.hotspotsGrouped).filter(h => 
+            activeFilter === 'all' || h.severity === activeFilter
+        );
+
+        // Sort by report count (most affected first)
+        filteredHotspots.sort((a, b) => b.count - a.count);
+
+        container.innerHTML = filteredHotspots.length
+            ? filteredHotspots.map(h => {
+                const latLng = `${h.lat},${h.lng}`;
+                const lastReport = h.reports[0];
+                const lastUpdated = new Date(lastReport?.created_at).toLocaleDateString('en-US', { 
+                    month: 'short', 
+                    day: 'numeric',
+                    year: 'numeric'
+                });
+
+                return `
+                    <div class="hotspot-card" data-location="${this.escapeHtml(h.location)}" data-latlng="${latLng}">
+                        <div class="hotspot-card-header">
+                            <div class="hotspot-title-section">
+                                <h3 class="hotspot-location">${this.escapeHtml(h.location)}</h3>
+                                <span class="hotspot-severity-badge ${h.severity}">${h.severity.toUpperCase()}</span>
+                            </div>
+                        </div>
+                        <div class="hotspot-card-content">
+                            <div class="hotspot-stat">
+                                <span class="hotspot-stat-label">Reports:</span>
+                                <span class="hotspot-stat-value">${h.count}</span>
+                            </div>
+                            <div class="hotspot-stat">
+                                <span class="hotspot-stat-label">Coordinates:</span>
+                                <span class="hotspot-stat-value">${h.lat.toFixed(4)}, ${h.lng.toFixed(4)}</span>
+                            </div>
+                            <div class="hotspot-stat">
+                                <span class="hotspot-stat-label">Last Updated:</span>
+                                <span class="hotspot-stat-value">${lastUpdated}</span>
+                            </div>
+                            ${lastReport?.description ? `
+                            <div class="hotspot-stat">
+                                <span class="hotspot-stat-label">Latest Report:</span>
+                                <p class="hotspot-description">${this.escapeHtml(lastReport.description.substring(0, 80))}...</p>
+                            </div>
+                            ` : ''}
+                        </div>
+                        <button class="btn btn-primary view-on-map-btn" data-latlng="${latLng}">
+                            🗺️ View on Map
+                        </button>
+                    </div>
+                `;
+            }).join('')
+            : `<div class="text-center" style="padding: 2rem; color: var(--muted-foreground);">
+                <p>No hotspots found for the selected filter.</p>
+            </div>`;
+    }
+
+    viewOnMap(latLng) {
+        const [lat, lng] = latLng.split(',').map(Number);
+        
+        if (!this.map) return;
+
+        // Smooth scroll to map
+        const mapElement = document.getElementById('goaMap');
+        if (mapElement) {
+            mapElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+
+        // Zoom to marker
+        setTimeout(() => {
+            this.map.setView([lat, lng], 15, { animate: true });
+
+            // Find and open popup
+            const key = `${lat},${lng}`;
+            if (this.markersByLocation[key]) {
+                const marker = this.markersByLocation[key].marker;
+                marker.openPopup();
+            }
+        }, 500);
+    }
+
+    escapeHtml(text) {
+        if (!text) return '';
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+
+    /* ---------- MISSIONS ---------- */
+    async loadMissions() {
+        this.missions = await this.fetchJSON('/api/missions');
         this.renderMissions();
     }
 
     renderMissions() {
-        const missionsGrid = document.getElementById('missionsGrid');
-        if (!missionsGrid) return;
+        const container = document.getElementById('missionsGrid');
+        if (!container || !this.missions) return;
 
-        missionsGrid.innerHTML = this.missions.map(mission => {
-            const progressPercent = (mission.participants / mission.maxParticipants) * 100;
-            const isJoined = this.joinedMissions.includes(mission.id);
-            const isFull = mission.participants >= mission.maxParticipants;
-
-            return `
+        container.innerHTML = this.missions.length
+            ? this.missions.map(m => `
                 <div class="mission-card">
-                    <div class="mission-image" style="background-image: url('${mission.image}'); position: relative;">
-                        <div class="mission-badges">
-                            <span class="mission-badge badge-${mission.type}">
-                                ${this.getMissionTypeIcon(mission.type)}
-                                ${mission.type.charAt(0).toUpperCase() + mission.type.slice(1)}
-                            </span>
-                            <span class="mission-badge difficulty-${mission.difficulty}">
-                                ${mission.difficulty.charAt(0).toUpperCase() + mission.difficulty.slice(1)}
-                            </span>
+                    ${m.image ? `<img src="${API_BASE}/uploads/${m.image}" alt="${m.title}" class="mission-image">` : ''}
+                    <div class="mission-content">
+                        <h3>${m.title}</h3>
+                        <p>${m.description}</p>
+                        <div class="mission-meta">
+                            <span>📅 ${new Date(m.date).toLocaleDateString()}</span>
+                            <span>📍 ${m.location}</span>
                         </div>
-                    </div>
-                    <div class="mission-info">
-                        <h3 class="mission-title">${mission.title}</h3>
-                        <p class="mission-description">${mission.description}</p>
-                        
-                        <div class="mission-details">
-                            <div class="mission-detail">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-                                    <line x1="16" y1="2" x2="16" y2="6"/>
-                                    <line x1="8" y1="2" x2="8" y2="6"/>
-                                    <line x1="3" y1="10" x2="21" y2="10"/>
-                                </svg>
-                                ${mission.date} • ${mission.time}
-                            </div>
-                            <div class="mission-detail">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
-                                    <circle cx="12" cy="10" r="3"/>
-                                </svg>
-                                ${mission.location}
-                            </div>
-                            <div class="mission-detail">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-                                    <circle cx="9" cy="7" r="4"/>
-                                    <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
-                                    <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-                                </svg>
-                                ${mission.participants}/${mission.maxParticipants} volunteers
-                            </div>
-                        </div>
-
-                        <div class="mission-progress">
-                            <div class="mission-progress-text">
-                                <span>Progress</span>
-                                <span>${progressPercent.toFixed(0)}% Full</span>
-                            </div>
-                            <div class="progress-bar">
-                                <div class="progress-fill" style="width: ${progressPercent}%"></div>
-                            </div>
-                        </div>
-
-                        <button class="btn ${isJoined ? 'btn-success' : 'btn-primary'} w-full mission-join-btn" 
-                                data-mission-id="${mission.id}" 
-                                ${isFull ? 'disabled' : ''}>
-                            ${isJoined ? 'Joined ✓' : isFull ? 'Mission Full' : 'Join Now'}
+                        <button class="btn btn-primary join-mission-btn" data-mission-id="${m.id}">
+                            Join Mission
                         </button>
                     </div>
                 </div>
-            `;
-        }).join('');
-    }
-
-    getMissionTypeIcon(type) {
-        const icons = {
-            cleanup: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18l-2 13H5L3 6z"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
-            plantation: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1.5 2.5 1 3.5 1 6.5-2.5.5-3.5 1.5-4 3-1 0-2.5.5-4 1.5z"/><path d="M3 20c0-3 2-5 5-6"/></svg>',
-            awareness: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 11l3-3 7 7 13-13"/></svg>',
-            wildlife: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>'
-        };
-        return icons[type] || '';
+            `).join('')
+            : `<p class="text-center">No missions available yet.</p>`;
     }
 
     openMissionModal(missionId) {
-        const mission = this.missions.find(m => m.id === missionId);
+        const mission = this.missions?.find(m => m.id == missionId);
         if (!mission) return;
 
-        const modal = document.getElementById('missionModal');
-        const modalImage = document.getElementById('modalImage');
-        const modalMissionTitle = document.getElementById('modalMissionTitle');
-        const modalMissionDesc = document.getElementById('modalMissionDesc');
-        const modalDateTime = document.getElementById('modalDateTime');
-        const modalLocation = document.getElementById('modalLocation');
-        const modalDifficulty = document.getElementById('modalDifficulty');
-        const confirmJoinBtn = document.getElementById('confirmJoinBtn');
-
-        if (modalImage) modalImage.src = mission.image;
-        if (modalMissionTitle) modalMissionTitle.textContent = mission.title;
-        if (modalMissionDesc) modalMissionDesc.textContent = mission.description;
-        if (modalDateTime) modalDateTime.textContent = `${mission.date}, ${mission.time}`;
-        if (modalLocation) modalLocation.textContent = mission.location;
-        if (modalDifficulty) {
-            modalDifficulty.textContent = mission.difficulty.charAt(0).toUpperCase() + mission.difficulty.slice(1);
-            modalDifficulty.className = `difficulty-${mission.difficulty}`;
+        document.getElementById('modalTitle').textContent = 'Join Mission';
+        document.getElementById('modalMissionTitle').textContent = mission.title;
+        document.getElementById('modalMissionDesc').textContent = mission.description;
+        document.getElementById('modalDateTime').textContent = new Date(mission.date).toLocaleString();
+        document.getElementById('modalLocation').textContent = mission.location;
+        document.getElementById('modalDifficulty').textContent = mission.difficulty || 'Moderate';
+        if (mission.image) {
+            document.getElementById('modalImage').src = `${API_BASE}/uploads/${mission.image}`;
         }
-
-        if (confirmJoinBtn) {
-            const isJoined = this.joinedMissions.includes(missionId);
-            confirmJoinBtn.textContent = isJoined ? 'Joined Successfully ✓' : 'Confirm Join Mission';
-            confirmJoinBtn.disabled = isJoined;
-            confirmJoinBtn.dataset.missionId = missionId;
-        }
-
-        if (modal) {
-            modal.style.display = "flex";
-            document.body.style.overflow = 'hidden';
-        }
+        document.getElementById('confirmJoinBtn').dataset.missionId = missionId;
+        document.getElementById('missionModal').classList.add('active');
     }
 
-    openMissionModalWithData(missionData) {
-        const modal = document.getElementById('missionModal');
-        const modalMissionTitle = document.getElementById('modalMissionTitle');
-        const modalMissionDesc = document.getElementById('modalMissionDesc');
-        const modalDateTime = document.getElementById('modalDateTime');
-        const modalLocation = document.getElementById('modalLocation');
-        const modalDifficulty = document.getElementById('modalDifficulty');
-
-        if (modalMissionTitle) modalMissionTitle.textContent = missionData.title;
-        if (modalMissionDesc) modalMissionDesc.textContent = missionData.description;
-        if (modalDateTime) modalDateTime.textContent = missionData.datetime;
-        if (modalLocation) modalLocation.textContent = missionData.location;
-        if (modalDifficulty) {
-            modalDifficulty.textContent = missionData.difficulty;
-            modalDifficulty.className = `difficulty-${missionData.difficulty.toLowerCase()}`;
-        }
-
-        if (modal) {
-            modal.style.display = "flex";
-            document.body.style.overflow = 'hidden';
-        }
-    }
-
-    closeModal() {
-        const missionModal = document.getElementById('missionModal');
+    showJoinForm(missionId) {
+        document.getElementById('missionModal').classList.remove('active');
         const joinModal = document.getElementById('joinModal');
-        
-        if (missionModal) missionModal.style.display = "none";
-        if (joinModal) joinModal.style.display = "none";
-        
-        document.body.style.overflow = '';
+        joinModal.classList.remove('hidden');
+        joinModal.classList.add('active');
+        document.getElementById('joinForm').dataset.missionId = missionId;
     }
 
-    confirmJoinMission() {
-        const confirmJoinBtn = document.getElementById('confirmJoinBtn');
-        if (!confirmJoinBtn) return;
+    async handleJoinMission(e) {
+        e.preventDefault();
+        const form = e.target.closest('form');
+        const missionId = form.dataset.missionId;
+        const name = document.getElementById('joinName').value;
+        const email = document.getElementById('joinEmail').value;
+        const phone = document.getElementById('joinPhone').value;
 
-        const missionId = confirmJoinBtn.dataset.missionId;
-        const mission = this.missions.find(m => m.id === missionId);
-
-        if (!mission || this.joinedMissions.includes(missionId)) {
-            this.showToast('You are already registered for this mission.', 'error');
+        if (!missionId) {
+            this.showToast('Mission ID is missing', 'error');
+            console.error('Mission ID missing from form dataset');
             return;
         }
 
-        this.joinedMissions.push(missionId);
-        mission.participants += 1;
+        console.log('Attempting to join mission:', {
+            mission_id: missionId,
+            name,
+            email,
+            phone: phone || 'not provided',
+            api_url: `${API_BASE}/api/join`
+        });
 
-        this.renderMissions();
-        this.closeModal();
+        try {
+            // Test connection first
+            console.log('Testing connection to:', API_BASE);
 
-        this.showToast(`You've joined "${mission.title}". Check your email for details.`, 'success');
+            const res = await fetch(`${API_BASE}/api/join`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
+                body: JSON.stringify({
+                    mission_id: missionId,
+                    name: name.trim(),
+                    email: email.trim().toLowerCase(),
+                    phone: phone ? phone.trim() : null
+                }),
+                mode: 'cors'  // Explicitly set CORS mode
+            });
+
+            console.log('Response status:', res.status);
+
+            if (!res.ok) {
+                let errorMsg = `HTTP ${res.status}`;
+                try {
+                    const errorData = await res.json();
+                    errorMsg = errorData.error || errorMsg;
+                } catch (parseError) {
+                    // Couldn't parse JSON error response
+                    const text = await res.text();
+                    errorMsg = text || errorMsg;
+                }
+                throw new Error(errorMsg);
+            }
+
+            const data = await res.json();
+            console.log('Join mission success:', data);
+
+            this.showToast('Successfully joined mission!', 'success');
+
+            // Close modal
+            const joinModal = document.getElementById('joinModal');
+            if (joinModal) {
+                joinModal.classList.remove('active');
+                joinModal.classList.add('hidden');
+            }
+
+            // Reset form
+            if (form) form.reset();
+
+            // Refresh missions if needed
+            if (typeof this.loadMissions === 'function') {
+                this.loadMissions();
+            }
+
+        } catch (err) {
+            console.error('Join mission error details:', err);
+
+            // Provide more specific error messages
+            let userMessage = err.message;
+
+            if (err.name === 'TypeError' && err.message.includes('fetch')) {
+                userMessage = `Cannot connect to server. Please ensure:
+                1. Backend server is running (node server.js)
+                2. Port 3000 is accessible
+                3. No firewall blocking the connection`;
+            } else if (err.message.includes('NetworkError')) {
+                userMessage = 'Network error. Check your internet connection.';
+            } else if (err.message.includes('CORS')) {
+                userMessage = 'CORS error. Server may not be properly configured.';
+            }
+
+            this.showToast(userMessage, 'error');
+
+            // Show debug info in console
+            console.log('Debug info:');
+            console.log('- API_BASE:', API_BASE);
+            console.log('- Full URL:', `${API_BASE}/api/join`);
+            console.log('- Request body:', {
+                mission_id: missionId,
+                name,
+                email,
+                phone
+            });
+        }
     }
 
-    // Leaderboard Data & Functions (Static data)
-    loadLeaderboard() {
-        this.leaderboard = [
-            {
-                id: '1',
-                name: 'Priya Sharma',
-                avatar: 'https://images.unsplash.com/photo-1494790108755-2616b612b786?w=100&h=100&fit=crop&crop=face',
-                points: 2450,
-                rank: 1,
-                badges: ['Gold Contributor', 'Beach Guardian', 'Tree Warrior'],
-                contributions: {
-                    reportsSubmitted: 45,
-                    missionsCompleted: 12,
-                    treesPlanted: 25
-                },
-                location: 'Panjim'
-            },
-            {
-                id: '2',
-                name: 'Arjun Menon',
-                avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=100&h=100&fit=crop&crop=face',
-                points: 2180,
-                rank: 2,
-                badges: ['Silver Champion', 'Wildlife Protector', 'Clean Beach Hero'],
-                contributions: {
-                    reportsSubmitted: 38,
-                    missionsCompleted: 15,
-                    treesPlanted: 20
-                },
-                location: 'Margao'
-            },
-            {
-                id: '3',
-                name: 'Kavitha Nair',
-                avatar: 'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=100&h=100&fit=crop&crop=face',
-                points: 1920,
-                rank: 3,
-                badges: ['Bronze Explorer', 'River Guardian', 'Eco Educator'],
-                contributions: {
-                    reportsSubmitted: 32,
-                    missionsCompleted: 8,
-                    treesPlanted: 30
-                },
-                location: 'Mapusa'
-            },
-            {
-                id: '4',
-                name: 'Rohit Desai',
-                avatar: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=100&h=100&fit=crop&crop=face',
-                points: 1650,
-                rank: 4,
-                badges: ['Rising Star', 'Pollution Fighter'],
-                contributions: {
-                    reportsSubmitted: 28,
-                    missionsCompleted: 6,
-                    treesPlanted: 15
-                },
-                location: 'Calangute'
-            },
-            {
-                id: '5',
-                name: 'Anita Fernandes',
-                avatar: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=100&h=100&fit=crop&crop=face',
-                points: 1420,
-                rank: 5,
-                badges: ['Dedicated Volunteer', 'Beach Cleaner'],
-                contributions: {
-                    reportsSubmitted: 25,
-                    missionsCompleted: 9,
-                    treesPlanted: 12
-                },
-                location: 'Anjuna'
-            },
-            {
-                id: '6',
-                name: 'Vikram Gaikwad',
-                avatar: 'https://images.unsplash.com/photo-1506794778202-cad84cf45f65?w=100&h=100&fit=crop&crop=face',
-                points: 1180,
-                rank: 6,
-                badges: ['Green Warrior', 'Community Helper'],
-                contributions: {
-                    reportsSubmitted: 20,
-                    missionsCompleted: 7,
-                    treesPlanted: 18
-                },
-                location: 'Baga'
-            }
-        ];
-
+    /* ---------- LEADERBOARD ---------- */
+    async loadLeaderboard() {
+        this.leaderboard = await this.fetchJSON('/api/leaderboard');
         this.renderLeaderboard();
-        this.updateLeaderboardStats();
     }
 
     renderLeaderboard() {
+        if (!this.leaderboard) return;
+
+        // Update stats
+        document.getElementById('totalReports')?.setAttribute('data-count', this.leaderboard.totalReports || 0);
+        document.getElementById('totalMissions')?.setAttribute('data-count', this.leaderboard.totalMissions || 0);
+        document.getElementById('totalTrees')?.setAttribute('data-count', this.leaderboard.totalTrees || 0);
+
+        // Animate numbers
+        this.animateCounter('totalReports', this.leaderboard.totalReports || 0);
+        this.animateCounter('totalMissions', this.leaderboard.totalMissions || 0);
+        this.animateCounter('totalTrees', this.leaderboard.totalTrees || 0);
+
+        // Render top 3 podium with avatars and medals
         const podiumGrid = document.getElementById('podiumGrid');
-        const leaderboardList = document.getElementById('leaderboardList');
-
-        if (podiumGrid) {
-            const top3 = this.leaderboard.slice(0, 3);
-            // Reorder for podium display: 2nd, 1st, 3rd
-            const podiumOrder = [top3[1], top3[0], top3[2]];
-
-            podiumGrid.innerHTML = podiumOrder.map((entry, index) => {
-                const actualRank = entry.rank;
+        if (podiumGrid && Array.isArray(this.leaderboard.top3)) {
+            podiumGrid.innerHTML = this.leaderboard.top3.map((user, idx) => {
+                const medal = idx === 0 ? '★' : idx === 1 ? '☆' : '✦';
+                const cls = idx === 0 ? 'gold' : idx === 1 ? 'silver' : 'bronze';
+                const initials = (user.name || 'U').split(' ').map(s=>s[0]).slice(0,2).join('').toUpperCase();
                 return `
-                    <div class="podium-card rank-${actualRank} animate-fade-in-up" style="animation-delay: ${index * 0.1}s">
-                        <div class="podium-rank">
-                            ${this.getRankIcon(actualRank)}
-                        </div>
-                        <img src="${entry.avatar}" alt="${entry.name}" class="podium-avatar">
-                        <h3 class="podium-name">${entry.name}</h3>
-                        <p class="podium-location">${entry.location}</p>
-                        <div class="podium-points">${entry.points.toLocaleString()} pts</div>
-                        <div class="podium-badges">
-                            ${entry.badges.slice(0, 2).map(badge => `
-                                <span class="podium-badge ${this.getBadgeClass(badge)}">${badge}</span>
-                            `).join('')}
-                        </div>
-                        <div class="podium-contributions">
-                            <div class="contribution-item">
-                                <div class="contribution-number">${entry.contributions.reportsSubmitted}</div>
-                                <div class="contribution-label">Reports</div>
-                            </div>
-                            <div class="contribution-item">
-                                <div class="contribution-number">${entry.contributions.missionsCompleted}</div>
-                                <div class="contribution-label">Missions</div>
-                            </div>
-                            <div class="contribution-item">
-                                <div class="contribution-number">${entry.contributions.treesPlanted}</div>
-                                <div class="contribution-label">Trees</div>
-                            </div>
-                        </div>
+                <div class="podium-item ${cls}">
+                    <div class="podium-avatar">${user.avatar || '' || initials}</div>
+                    <div class="podium-meta">
+                        <div class="podium-name">${user.name}</div>
+                        <div class="podium-score">${user.score} pts</div>
                     </div>
-                `;
+                    <div class="podium-medal">${medal}</div>
+                </div>`;
             }).join('');
         }
 
-        if (leaderboardList) {
-            const rest = this.leaderboard.slice(3);
-            leaderboardList.innerHTML = rest.map(entry => `
+        // Render full leaderboard with avatars, progress bars and subtle animations
+        const leaderboardList = document.getElementById('leaderboardList');
+        if (leaderboardList && Array.isArray(this.leaderboard.list)) {
+            // Determine max score for progress bars
+            const allScores = [ ...(this.leaderboard.top3 || []).map(u=>u.score || 0), ...(this.leaderboard.list || []).map(u=>u.score || 0) ];
+            const maxScore = Math.max(...allScores, 1);
+
+            leaderboardList.innerHTML = this.leaderboard.list.map((user, idx) => {
+                const rank = idx + 4; // top3 shown separately
+                const initials = (user.name || 'U').split(' ').map(s=>s[0]).slice(0,2).join('').toUpperCase();
+                const pct = Math.round(((user.score||0) / maxScore) * 100);
+                const avatarHtml = user.avatar ? `<img class="leaderboard-avatar" src="${user.avatar}" alt="${user.name}">` : `<div class="avatar-initials">${initials}</div>`;
+
+                return `
                 <div class="leaderboard-item">
-                    <div class="leaderboard-rank">
-                        ${this.getRankIcon(entry.rank)}
-                    </div>
-                    <img src="${entry.avatar}" alt="${entry.name}" class="leaderboard-avatar">
+                    <div class="leaderboard-rank">${rank}</div>
+                    ${avatarHtml}
                     <div class="leaderboard-info">
-                        <div class="leaderboard-name">${entry.name}</div>
-                        <div class="leaderboard-location">${entry.location}</div>
-                        <div class="leaderboard-badges">
-                            ${entry.badges.slice(0, 2).map(badge => `
-                                <span class="podium-badge ${this.getBadgeClass(badge)}">${badge}</span>
-                            `).join('')}
+                        <div class="leaderboard-name">${user.name}</div>
+                        <div class="leaderboard-location">${user.location || ''}</div>
+                        <div class="progress-wrap">
+                            <div class="progress-bar" style="width:${pct}%"></div>
                         </div>
                     </div>
-                    <div>
-                        <div class="leaderboard-points">${entry.points.toLocaleString()} pts</div>
-                        <div class="leaderboard-contributions">
-                            <div class="contribution-stat">
-                                <div style="width: 8px; height: 8px; background: var(--success); border-radius: 50%;"></div>
-                                <span>${entry.contributions.reportsSubmitted}</span>
-                            </div>
-                            <div class="contribution-stat">
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-                                    <circle cx="9" cy="7" r="4"/>
-                                    <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
-                                    <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-                                </svg>
-                                <span>${entry.contributions.missionsCompleted}</span>
-                            </div>
-                            <div class="contribution-stat">
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                    <path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1.5 2.5 1 3.5 1 6.5-2.5.5-3.5 1.5-4 3-1 0-2.5.5-4 1.5z"/>
-                                    <path d="M3 20c0-3 2-5 5-6"/>
-                                </svg>
-                                <span>${entry.contributions.treesPlanted}</span>
-                            </div>
-                        </div>
-                    </div>
+                    <div class="leaderboard-points">${user.score} pts</div>
                 </div>
-            `).join('');
+                `;
+            }).join('');
+
+            // Add staggered fade-in animation
+            requestAnimationFrame(()=>{
+                leaderboardList.querySelectorAll('.leaderboard-item').forEach((el, i)=>{
+                    el.style.animationDelay = `${i * 60}ms`;
+                    el.classList.add('fade-in-up');
+                });
+            });
         }
     }
 
-    getRankIcon(rank) {
-        const icons = {
-            1: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: #d97706;"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><polyline points="6,9 12,9 12,15"/><polyline points="16,9 20,9 20,15"/><polyline points="12,15 12,9"/><circle cx="12" cy="20" r="1"/></svg>',
-            2: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: #6b7280;"><circle cx="12" cy="12" r="3"/><path d="M12 1v6m0 6v6"/><path d="m21 12-6-6-6 6-6-6"/></svg>',
-            3: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: #ea580c;"><polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/></svg>'
-        };
-        return icons[rank] || `<div style="width: 24px; height: 24px; background: var(--muted); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold;">${rank}</div>`;
-    }
-
-    getBadgeClass(badge) {
-        if (badge.includes('Gold')) return 'badge-gold';
-        if (badge.includes('Silver')) return 'badge-silver';
-        if (badge.includes('Bronze')) return 'badge-bronze';
-        if (badge.includes('Guardian') || badge.includes('Protector')) return 'badge-guardian';
-        if (badge.includes('Hero') || badge.includes('Champion')) return 'badge-hero';
-        return 'badge-default';
-    }
-
-    updateLeaderboardStats() {
-        const totalReports = this.leaderboard.reduce((sum, entry) => sum + entry.contributions.reportsSubmitted, 0);
-        const totalMissions = this.leaderboard.reduce((sum, entry) => sum + entry.contributions.missionsCompleted, 0);
-        const totalTrees = this.leaderboard.reduce((sum, entry) => sum + entry.contributions.treesPlanted, 0);
-
-        const totalReportsEl = document.getElementById('totalReports');
-        const totalMissionsEl = document.getElementById('totalMissions');
-        const totalTreesEl = document.getElementById('totalTrees');
-
-        if (totalReportsEl) this.animateNumber(totalReportsEl, totalReports);
-        if (totalMissionsEl) this.animateNumber(totalMissionsEl, totalMissions);
-        if (totalTreesEl) this.animateNumber(totalTreesEl, totalTrees);
-    }
-
-    // Policy Data & Functions (Static data)
-    loadPolicies() {
-        this.policies = [
-            {
-                id: '1',
-                title: 'Single-Use Plastic Ban Implementation',
-                description: 'Complete ban on single-use plastic items including bags, straws, and containers across all establishments in Goa.',
-                status: 'implemented',
-                progress: 100,
-                category: 'waste-management',
-                lastUpdated: '2 days ago',
-                impact: '85% reduction in plastic waste',
-                agency: 'Goa Pollution Control Board',
-                timeline: 'Phase 1 Complete'
-            },
-            {
-                id: '2',
-                title: 'Beach Clean-up Drive Initiative',
-                description: 'Coordinated weekly beach cleaning activities across all major beaches with community participation and monitoring.',
-                status: 'in-progress',
-                progress: 75,
-                category: 'waste-management',
-                lastUpdated: '1 week ago',
-                impact: '50+ beaches covered weekly',
-                agency: 'Department of Environment',
-                timeline: 'Ongoing Program'
-            },
-            {
-                id: '3',
-                title: 'Mangrove Conservation Project',
-                description: 'Protection and restoration of mangrove ecosystems along Goa\'s coastline with community-based conservation programs.',
-                status: 'in-progress',
-                progress: 60,
-                category: 'biodiversity',
-                lastUpdated: '3 days ago',
-                impact: '500 hectares under protection',
-                agency: 'Forest Department',
-                timeline: '2024-2026'
-            },
-            {
-                id: '4',
-                title: 'Industrial Effluent Monitoring System',
-                description: 'Real-time monitoring of industrial discharge into rivers and coastal waters with automated alert systems.',
-                status: 'in-progress',
-                progress: 45,
-                category: 'pollution-control',
-                lastUpdated: '5 days ago',
-                impact: '24/7 water quality monitoring',
-                agency: 'Goa State Pollution Control Board',
-                timeline: 'Phase 2 - Dec 2024'
-            },
-            {
-                id: '5',
-                title: 'Eco-Tourism Certification Program',
-                description: 'Mandatory sustainability certification for all tourism operators with regular audits and compliance monitoring.',
-                status: 'pending',
-                progress: 25,
-                category: 'sustainable-tourism',
-                lastUpdated: '2 weeks ago',
-                impact: 'Tourism industry transformation',
-                agency: 'Department of Tourism',
-                timeline: 'Approval Pending'
-            },
-            {
-                id: '6',
-                title: 'Solar Energy Mandate for Public Buildings',
-                description: 'Requirement for all government buildings to install solar panels and achieve 80% renewable energy usage.',
-                status: 'planning',
-                progress: 15,
-                category: 'renewable-energy',
-                lastUpdated: '1 month ago',
-                impact: '30% reduction in carbon footprint',
-                agency: 'Goa Energy Development Agency',
-                timeline: 'Planning Phase'
-            },
-            {
-                id: '7',
-                title: 'Coastal Regulation Zone Protection',
-                description: 'Stricter enforcement of CRZ regulations with enhanced monitoring and penalties for violations.',
-                status: 'implemented',
-                progress: 100,
-                category: 'biodiversity',
-                lastUpdated: '1 week ago',
-                impact: 'Zero unauthorized construction',
-                agency: 'Coastal Zone Management Authority',
-                timeline: 'Enforcement Active'
-            },
-            {
-                id: '8',
-                title: 'E-Waste Management Framework',
-                description: 'Comprehensive electronic waste collection, processing, and recycling system across all municipalities.',
-                status: 'in-progress',
-                progress: 55,
-                category: 'waste-management',
-                lastUpdated: '4 days ago',
-                impact: '1000+ tons e-waste processed',
-                agency: 'Municipal Corporations',
-                timeline: 'Mid-2025 Target'
+    animateCounter(id, target) {
+        const element = document.getElementById(id);
+        if (!element) return;
+        let current = 0;
+        const increment = target / 50;
+        const timer = setInterval(() => {
+            current += increment;
+            if (current >= target) {
+                element.textContent = target;
+                clearInterval(timer);
+            } else {
+                element.textContent = Math.floor(current);
             }
-        ];
+        }, 30);
+    }
 
+    /* ---------- POLICIES ---------- */
+    async loadPolicies() {
+        // Load policies and also get report stats for dynamic tracking
+        this.policies = await this.fetchJSON('/api/policies');
+        this.reportStats = await this.fetchJSON('/api/report-stats');
         this.renderPolicies();
-        this.updatePolicyStats();
     }
 
     renderPolicies() {
+        // Use report statistics for policy tracker counts
+        if (this.reportStats) {
+            const stats = this.reportStats;
+            // Update policy tracker stats based on reports
+            const implementedEl = document.getElementById('implementedCount');
+            const inProgressEl = document.getElementById('inProgressCount');
+            const pendingEl = document.getElementById('pendingCount');
+            const planningEl = document.getElementById('planningCount');
+
+            if (implementedEl) implementedEl.textContent = stats.approved || 0;
+            if (inProgressEl) inProgressEl.textContent = stats.pending || 0;
+            if (pendingEl) pendingEl.textContent = stats.total || 0;
+            if (planningEl) planningEl.textContent = stats.rejected || 0;
+        }
+
+        // Render policy cards (if policies exist)
         const policiesList = document.getElementById('policiesList');
-        if (!policiesList) return;
-
-        policiesList.innerHTML = this.policies.map(policy => `
-            <div class="policy-card">
-                <div class="policy-header">
-                    <div>
-                        <div class="policy-badges">
-                            ${this.getPolicyStatusIcon(policy.status)}
-                            <span class="policy-badge status-${policy.status}">${policy.status.replace('-', ' ').replace(/\b\w/g, l => l.toUpperCase())}</span>
-                            <span class="policy-badge category-${policy.category}">${policy.category.replace('-', ' ').replace(/\b\w/g, l => l.toUpperCase())}</span>
-                        </div>
-                        <h3 class="policy-title">${policy.title}</h3>
+        if (policiesList && this.policies && this.policies.length > 0) {
+            policiesList.innerHTML = this.policies.map(p => `
+                <div class="policy-card">
+                    <div class="policy-status ${p.status}">
+                        <span>${(p.status || 'pending').replace('_', ' ').toUpperCase()}</span>
                     </div>
-                    <div style="text-align: right;">
-                        <div class="policy-progress-number">${policy.progress}%</div>
-                        <div class="policy-progress-label">Complete</div>
+                    <h3>${p.title}</h3>
+                    <p>${p.description}</p>
+                    <div class="policy-meta">
+                        <span>📅 ${new Date(p.created_at).toLocaleDateString()}</span>
+                        ${p.deadline ? `<span>⏰ Deadline: ${new Date(p.deadline).toLocaleDateString()}</span>` : ''}
                     </div>
                 </div>
-
-                <p class="policy-description">${policy.description}</p>
-
-                <div class="policy-progress-bar">
-                    <div class="policy-progress-text">
-                        <span>Progress</span>
-                        <span>${policy.progress}% Complete</span>
+            `).join('');
+        } else if (policiesList) {
+            // Show report-based policy info if no policies
+            policiesList.innerHTML = `
+                <div class="policy-card">
+                    <div class="policy-status in_progress">
+                        <span>LIVE TRACKING</span>
                     </div>
-                    <div class="progress-bar">
-                        <div class="progress-fill ${this.getProgressColorClass(policy.progress)}" style="width: ${policy.progress}%"></div>
-                    </div>
+                    <h3>Environmental Reports Tracker</h3>
+                    <p>Real-time tracking of environmental issues reported by citizens. Reports are reviewed and addressed by authorities.</p>
                 </div>
-
-                <div class="policy-details">
-                    <div class="policy-detail">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-                            <circle cx="9" cy="7" r="4"/>
-                            <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
-                            <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-                        </svg>
-                        <div>
-                            <div class="policy-detail-label">Agency</div>
-                            <div class="policy-detail-value">${policy.agency}</div>
-                        </div>
-                    </div>
-                    <div class="policy-detail">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-                            <line x1="16" y1="2" x2="16" y2="6"/>
-                            <line x1="8" y1="2" x2="8" y2="6"/>
-                            <line x1="3" y1="10" x2="21" y2="10"/>
-                        </svg>
-                        <div>
-                            <div class="policy-detail-label">Timeline</div>
-                            <div class="policy-detail-value">${policy.timeline}</div>
-                        </div>
-                    </div>
-                    <div class="policy-detail">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-                            <polyline points="22,4 12,14.01 9,11.01"/>
-                        </svg>
-                        <div>
-                            <div class="policy-detail-label">Impact</div>
-                            <div class="policy-detail-value">${policy.impact}</div>
-                        </div>
-                    </div>
-                    <div class="policy-detail">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="12" cy="12" r="10"/>
-                            <polyline points="12,6 12,12 16,14"/>
-                        </svg>
-                        <div>
-                            <div class="policy-detail-label">Last Updated</div>
-                            <div class="policy-detail-value">${policy.lastUpdated}</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `).join('');
+            `;
+        }
     }
 
-    getPolicyStatusIcon(status) {
-        const icons = {
-            implemented: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--success);"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22,4 12,14.01 9,11.01"/></svg>',
-            'in-progress': '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--primary);"><circle cx="12" cy="12" r="10"/><polyline points="12,6 12,12 16,14"/></svg>',
-            pending: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--warning);"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
-            planning: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--muted-foreground);"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14,2 14,8 20,8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10,9 9,9 8,9"/></svg>'
-        };
-        return icons[status] || '';
-    }
-
-    getProgressColorClass(progress) {
-        if (progress === 100) return 'bg-success';
-        if (progress >= 70) return 'bg-primary';
-        if (progress >= 40) return 'bg-warning';
-        return 'bg-muted-foreground';
-    }
-
-    updatePolicyStats() {
-        const statusCounts = this.policies.reduce((acc, policy) => {
-            acc[policy.status] = (acc[policy.status] || 0) + 1;
-            return acc;
-        }, {});
-
-        const implementedEl = document.getElementById('implementedCount');
-        const inProgressEl = document.getElementById('inProgressCount');
-        const pendingEl = document.getElementById('pendingCount');
-        const planningEl = document.getElementById('planningCount');
-
-        if (implementedEl) this.animateNumber(implementedEl, statusCounts.implemented || 0);
-        if (inProgressEl) this.animateNumber(inProgressEl, statusCounts['in-progress'] || 0);
-        if (pendingEl) this.animateNumber(pendingEl, statusCounts.pending || 0);
-        if (planningEl) this.animateNumber(planningEl, statusCounts.planning || 0);
-    }
-
-    // Experiences Data & Functions (Eco Guide - Static data)
-    loadExperiences() {
-        this.experiences = [
-            {
-                id: '1',
-                title: 'Eco-Luxury Beach Resort',
-                description: 'Solar-powered beachfront resort with organic gardens, rainwater harvesting, and zero-waste practices.',
-                location: 'Agonda Beach',
-                category: 'stay',
-                rating: 4.8,
-                ecoScore: 95,
-                image: 'https://images.unsplash.com/photo-1582719478250-c89cae4dc85b?w=400&h=300&fit=crop',
-                highlights: ['Solar Energy', 'Organic Gardens', 'Zero Waste', 'Beach Conservation'],
-                price: '₹8,000/night',
-                sustainability: ['100% renewable energy', 'Local sourcing', 'Wildlife protection']
-            },
-            {
-                id: '2',
-                title: 'Western Ghats Trekking',
-                description: 'Guided eco-trekking through pristine forests with local tribal communities and wildlife spotting.',
-                location: 'Mollem National Park',
-                category: 'activity',
-                rating: 4.9,
-                ecoScore: 98,
-                image: 'https://images.unsplash.com/photo-1441974231531-c6227db76b6e?w=400&h=300&fit=crop',
-                highlights: ['Biodiversity Hotspot', 'Tribal Culture', 'Wildlife Spotting', 'Conservation Education'],
-                price: '₹2,500/person',
-                sustainability: ['Community-based tourism', 'Conservation funding', 'Low-impact trails']
-            },
-            {
-                id: '3',
-                title: 'Electric Vehicle Tours',
-                description: 'Silent electric vehicle tours of Goa\'s countryside, visiting organic farms and traditional villages.',
-                location: 'Bicholim & Sattari',
-                category: 'transport',
-                rating: 4.6,
-                ecoScore: 90,
-                image: 'https://images.unsplash.com/photo-1593941707882-a5bac6861d75?w=400&h=300&fit=crop',
-                highlights: ['Zero Emissions', 'Rural Tourism', 'Organic Farms', 'Cultural Heritage'],
-                price: '₹1,800/day',
-                sustainability: ['Carbon neutral', 'Local employment', 'Agricultural support']
-            },
-            {
-                id: '4',
-                title: 'Sustainable Seafood Restaurant',
-                description: 'Ocean-to-table dining featuring locally caught sustainable seafood and organic ingredients.',
-                location: 'Palolem Beach',
-                category: 'dining',
-                rating: 4.7,
-                ecoScore: 88,
-                image: 'https://images.unsplash.com/photo-1414235077428-338989a2e8c0?w=400&h=300&fit=crop',
-                highlights: ['Sustainable Fishing', 'Organic Produce', 'Waste Reduction', 'Local Sourcing'],
-                price: '₹1,200/meal',
-                sustainability: ['Sustainable fishing practices', 'Minimal packaging', 'Composting program']
-            },
-            {
-                id: '5',
-                title: 'Mangrove Kayaking Experience',
-                description: 'Silent kayaking through mangrove forests with marine biology experts and bird watching.',
-                location: 'Cumbarjua Canal',
-                category: 'activity',
-                rating: 4.8,
-                ecoScore: 92,
-                image: 'https://images.unsplash.com/photo-1544551763-46a013bb70d5?w=400&h=300&fit=crop',
-                highlights: ['Mangrove Ecosystem', 'Bird Watching', 'Marine Education', 'Silent Sports'],
-                price: '₹1,500/person',
-                sustainability: ['Ecosystem preservation', 'Educational impact', 'Non-motorized activity']
-            },
-            {
-                id: '6',
-                title: 'Bamboo Eco-Lodge',
-                description: 'Traditional bamboo construction with modern comforts, permaculture gardens, and yoga retreats.',
-                location: 'Arambol',
-                category: 'stay',
-                rating: 4.5,
-                ecoScore: 85,
-                image: 'https://images.unsplash.com/photo-1571896349842-33c89424de2d?w=400&h=300&fit=crop',
-                highlights: ['Bamboo Construction', 'Permaculture', 'Yoga Retreats', 'Wellness Focus'],
-                price: '₹4,500/night',
-                sustainability: ['Sustainable materials', 'Organic farming', 'Water conservation']
-            }
-        ];
-
+    /* ---------- EXPERIENCES ---------- */
+    async loadExperiences() {
+        this.experiences = await this.fetchJSON('/api/experiences');
         this.renderExperiences();
     }
 
     renderExperiences() {
-        const experiencesGrid = document.getElementById('experiencesGrid');
-        if (!experiencesGrid) return;
+        const container = document.getElementById('experiencesGrid');
+        if (!container || !this.experiences) return;
 
-        experiencesGrid.innerHTML = this.experiences.map(experience => `
-            <div class="experience-card">
-                <div class="experience-image" style="background-image: url('${experience.image}'); position: relative;">
-                    <div class="experience-badges">
-                        <span class="experience-badge category-${experience.category}">
-                            ${this.getCategoryIcon(experience.category)}
-                            ${experience.category.charAt(0).toUpperCase() + experience.category.slice(1)}
-                        </span>
-                        <span class="experience-badge">
-                            <span class="eco-score score-${Math.floor(experience.ecoScore / 5) * 5}">${experience.ecoScore}% Eco</span>
-                        </span>
+        container.innerHTML = this.experiences.length
+            ? this.experiences.map(e => `
+                <div class="experience-card">
+                    ${e.image ? `<img src="${API_BASE}/uploads/${e.image}" alt="${e.name}">` : ''}
+                    <div class="experience-content">
+                        <span class="experience-category">${e.category}</span>
+                        <h3>${e.name}</h3>
+                        <p>${e.description}</p>
+                        ${e.location ? `<div class="experience-location">📍 ${e.location}</div>` : ''}
                     </div>
                 </div>
-                <div class="experience-info">
-                    <div class="experience-header">
-                        <h3 class="experience-title">${experience.title}</h3>
-                        <div class="experience-rating">
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2">
-                                <polygon points="12,2 15.09,8.26 22,9.27 17,14.14 18.18,21.02 12,17.77 5.82,21.02 7,14.14 2,9.27 8.91,8.26"/>
-                            </svg>
-                            ${experience.rating}
-                        </div>
-                    </div>
-                    <div class="experience-location">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
-                            <circle cx="12" cy="10" r="3"/>
-                        </svg>
-                        ${experience.location}
-                    </div>
-                    <p class="experience-description">${experience.description}</p>
-                    <div class="experience-highlights">
-                        ${experience.highlights.slice(0, 3).map(highlight => `
-                            <span class="highlight-badge">${highlight}</span>
-                        `).join('')}
-                    </div>
-                    <div class="experience-sustainability">
-                        <div class="sustainability-title">Sustainability Features:</div>
-                        <ul class="sustainability-list">
-                            ${experience.sustainability.slice(0, 2).map(feature => `
-                                <li>${feature}</li>
-                            `).join('')}
-                        </ul>
-                    </div>
-                    <div class="experience-footer">
-                        <div class="experience-price">
-                            <span class="price-label">From </span>
-                            <span class="price-value">${experience.price}</span>
-                        </div>
-                        <button class="btn btn-success btn-sm">Know More</button>
+            `).join('')
+            : `<p class="text-center">No experiences available yet.</p>`;
+    }
+
+    /* ---------- ECO SPOTS ---------- */
+    async loadEcoSpots() {
+        this.ecoSpots = await this.fetchJSON('/api/eco-spots');
+        this.renderEcoSpots();
+    }
+
+    renderEcoSpots() {
+        const container = document.getElementById('experiencesGrid');
+        if (!container) return;
+
+        // Combine experiences and eco spots
+        let html = '';
+
+        if (this.experiences && this.experiences.length > 0) {
+            html += this.experiences.map(e => `
+                <div class="experience-card">
+                    ${e.image ? `<img src="${API_BASE}/uploads/${e.image}" alt="${e.name}">` : ''}
+                    <div class="experience-content">
+                        <span class="experience-category">${e.category}</span>
+                        <h3>${e.name}</h3>
+                        <p>${e.description}</p>
+                        ${e.location ? `<div class="experience-location">📍 ${e.location}</div>` : ''}
                     </div>
                 </div>
-            </div>
-        `).join('');
+            `).join('');
+        }
+
+        if (this.ecoSpots && this.ecoSpots.length > 0) {
+            html += this.ecoSpots.map(spot => `
+                <div class="eco-spot-card">
+                    ${spot.image ? `<img src="${API_BASE}/uploads/${spot.image}" alt="${spot.name}">` : ''}
+                    <div class="eco-spot-content">
+                        <div class="eco-spot-header">
+                            <h3>${spot.name}</h3>
+                            <div class="eco-spot-rating">⭐ ${spot.rating}</div>
+                        </div>
+                        <div class="eco-spot-location">📍 ${spot.location}</div>
+                        <p class="eco-spot-desc">${spot.description}</p>
+                        ${spot.features ? `
+                            <div class="eco-spot-features">
+                                ${spot.features.split(',').map(f => `<span class="feature-tag">${f.trim()}</span>`).join('')}
+                            </div>
+                        ` : ''}
+                        ${spot.price ? `<div class="eco-spot-price">${spot.price}</div>` : ''}
+                        <button class="btn btn-primary know-more-btn" data-spot-id="${spot.id}">
+                            Know More
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        container.innerHTML = html || '<p class="text-center">No eco spots or experiences available yet.</p>';
     }
 
-    getCategoryIcon(category) {
-        const icons = {
-            stay: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>',
-            activity: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 11l3-3 7 7 13-13"/></svg>',
-            transport: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9L18.4 10H14l2-6 3.9 2.2c.5.3 1.1.1 1.4-.4.3-.5.1-1.1-.4-1.4L17 2H7l-3.9 2.2c-.5.3-.7.9-.4 1.4.3.5.9.7 1.4.4L8 4l2 6H5.6l-2.1 1.1C2.7 11.3 2 12.1 2 13v3c0 .6.4 1 1 1h2"/><circle cx="7" cy="17" r="2"/><path d="M9 17h6"/><circle cx="17" cy="17" r="2"/></svg>',
-            dining: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1.5 2.5 1 3.5 1 6.5-2.5.5-3.5 1.5-4 3-1 0-2.5.5-4 1.5z"/><path d="M3 20c0-3 2-5 5-6"/></svg>'
-        };
-        return icons[category] || '';
-    }
-
-    // Utility Functions
-    animateNumber(element, target, duration = 2000) {
-        const start = 0;
-        const startTime = performance.now();
-
-        const updateNumber = (currentTime) => {
-            const elapsed = currentTime - startTime;
-            const progress = Math.min(elapsed / duration, 1);
-            const current = Math.floor(start + (target - start) * this.easeOutQuart(progress));
-            
-            element.textContent = current.toLocaleString();
-            
-            if (progress < 1) {
-                requestAnimationFrame(updateNumber);
+    async openEcoSpotModal(spotId) {
+        try {
+            const spot = await this.fetchJSON(`/api/eco-spots/${spotId}`);
+            if (!spot) {
+                this.showToast('Eco spot not found', 'error');
+                return;
             }
-        };
 
-        requestAnimationFrame(updateNumber);
+            // Create or update modal
+            let modal = document.getElementById('ecoSpotDetailModal');
+            if (!modal) {
+                modal = document.createElement('div');
+                modal.id = 'ecoSpotDetailModal';
+                modal.className = 'modal';
+                modal.innerHTML = `
+                    <div class="modal-content eco-spot-modal-content">
+                        <span class="close-modal">&times;</span>
+                        <div id="ecoSpotDetailContent"></div>
+                    </div>
+                `;
+                document.body.appendChild(modal);
+
+                // Close modal handlers
+                modal.querySelector('.close-modal').onclick = () => {
+                    modal.style.display = 'none';
+                };
+                modal.onclick = (e) => {
+                    if (e.target === modal) modal.style.display = 'none';
+                };
+            }
+
+            const content = document.getElementById('ecoSpotDetailContent');
+            content.innerHTML = `
+                ${spot.image ? `<img src="${API_BASE}/uploads/${spot.image}" alt="${spot.name}" class="eco-spot-modal-image">` : ''}
+                <div class="eco-spot-modal-body">
+                    <div class="eco-spot-modal-header">
+                        <h2>${spot.name}</h2>
+                        <div class="eco-spot-modal-rating">⭐ ${spot.rating}</div>
+                    </div>
+                    <div class="eco-spot-modal-location">📍 ${spot.location}</div>
+                    <p class="eco-spot-modal-description">${spot.description}</p>
+                    
+                    ${spot.features ? `
+                        <div class="eco-spot-modal-section">
+                            <h4>Sustainability Features:</h4>
+                            <div class="eco-spot-features-list">
+                                ${spot.features.split(',').map(f => `<div class="feature-item">✓ ${f.trim()}</div>`).join('')}
+                            </div>
+                        </div>
+                    ` : ''}
+                    
+                    ${spot.details ? `
+                        <div class="eco-spot-modal-section">
+                            <h4>Additional Details:</h4>
+                            <p>${spot.details}</p>
+                        </div>
+                    ` : ''}
+                    
+                    ${spot.price ? `
+                        <div class="eco-spot-modal-price">
+                            <strong>${spot.price}</strong>
+                        </div>
+                    ` : ''}
+                    
+                    ${spot.category ? `
+                        <div class="eco-spot-modal-category">
+                            <span class="category-badge">${spot.category}</span>
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+
+            modal.style.display = 'flex';
+        } catch (err) {
+            this.showToast('Failed to load eco spot details', 'error');
+        }
     }
 
-    easeOutQuart(t) {
-        return 1 - Math.pow(1 - t, 4);
+    /* ---------- MAP FILTERING ---------- */
+    filterMapMarkers(filter) {
+        if (!this.map || !this.markerLayers) return;
+
+        console.log('🎯 Filtering markers by:', filter);
+
+        // Clear all layers
+        Object.values(this.markerLayers).forEach(layer => {
+            this.map.removeLayer(layer);
+        });
+
+        // Show filtered markers
+        if (filter === 'all') {
+            this.markerLayers.all.addTo(this.map);
+        } else if (this.markerLayers[filter]) {
+            this.markerLayers[filter].addTo(this.map);
+        }
+
+        console.log(`✅ Map filtered to: ${filter}`);
     }
 
-    showToast(message, type = 'success') {
+    /* ---------- UI HELPERS ---------- */
+    showToast(msg, type) {
         const toast = document.getElementById('toast');
-        const toastMessage = document.getElementById('toastMessage');
-        
-        if (!toast || !toastMessage) return;
-
-        toastMessage.textContent = message;
         toast.className = `toast ${type} active`;
-
-        setTimeout(() => {
-            toast.classList.remove('active');
-        }, 4000);
+        toast.querySelector('#toastMessage').textContent = msg;
+        setTimeout(() => toast.classList.remove('active'), 6000);
     }
 
-    // Scroll to top functionality
-    addScrollToTop() {
-        const scrollBtn = document.createElement('button');
-        scrollBtn.innerHTML = '↑';
-        scrollBtn.className = 'scroll-to-top';
-        scrollBtn.style.cssText = `
-            position: fixed;
-            bottom: 2rem;
-            right: 2rem;
-            width: 3rem;
-            height: 3rem;
-            border-radius: 50%;
-            background: var(--primary);
-            color: var(--primary-foreground);
-            border: none;
-            font-size: 1.5rem;
-            cursor: pointer;
-            z-index: 1000;
-            opacity: 0;
-            transition: var(--transition);
-            box-shadow: var(--shadow-lg);
-        `;
+    showLoginModal() {
+        // Redirect to login page instead of showing modal
+        window.location.href = 'login/login.html';
+    }
 
-        scrollBtn.addEventListener('click', () => {
-            window.scrollTo({ top: 0, behavior: 'smooth' });
-        });
+    showSignupModal() {
+        // Redirect to signup page instead of showing modal
+        window.location.href = 'login/signup.html';
+    }
 
-        document.body.appendChild(scrollBtn);
-
-        window.addEventListener('scroll', () => {
-            if (window.scrollY > 500) {
-                scrollBtn.style.opacity = '1';
-                scrollBtn.style.transform = 'translateY(0)';
-            } else {
-                scrollBtn.style.opacity = '0';
-                scrollBtn.style.transform = 'translateY(1rem)';
+    initViewOnMapButtons() {
+        // Listen for dynamically added "View on Map" buttons
+        document.addEventListener('click', (e) => {
+            if (e.target.classList.contains('view-on-map-btn')) {
+                const latLng = e.target.dataset.latlng;
+                if (latLng) {
+                    this.viewOnMap(latLng);
+                }
             }
         });
+    }
+
+    closeModal() {
+        document.querySelectorAll('.modal').forEach(m => m.style.display = 'none');
+    }
+
+    initIntersectionObserver() {
+        // Get all sections
+        const sections = document.querySelectorAll('section[id]');
+        
+        // Create Intersection Observer options
+        const observerOptions = {
+            root: null,
+            rootMargin: '0px 0px -50% 0px',  // Trigger when section is 50% visible
+            threshold: 0
+        };
+        
+        // Callback function when sections enter/leave viewport
+        const observerCallback = (entries) => {
+            entries.forEach((entry) => {
+                if (entry.isIntersecting) {
+                    const sectionId = entry.target.id;
+                    
+                    // Remove active class from all nav links
+                    document.querySelectorAll('.nav-link').forEach(link => {
+                        link.classList.remove('active');
+                    });
+                    
+                    // Add active class to matching nav link
+                    const activeLink = document.querySelector(`.nav-link[data-section="${sectionId}"]`);
+                    if (activeLink) {
+                        activeLink.classList.add('active');
+                    }
+                }
+            });
+        };
+        
+        // Create observer and observe all sections
+        const observer = new IntersectionObserver(observerCallback, observerOptions);
+        sections.forEach(section => observer.observe(section));
     }
 }
 
-// Initialize the application when DOM is loaded
-document.addEventListener('DOMContentLoaded', () => {
-    const app = new GoaEcoGuard();
-    
-    // Add scroll to top button
-    app.addScrollToTop();
-    
-    // Add loading animation
-    document.body.style.opacity = '0';
-    setTimeout(() => {
-        document.body.style.opacity = '1';
-        document.body.style.transition = 'opacity 0.5s ease-in-out';
-    }, 100);
 
-    console.log('🌱 Goa Eco-Guard initialized successfully!');
-    console.log('🏖️ Welcome to Goa\'s environmental protection platform');
-    console.log('🤝 Join us in saving paradise together!');
+
+/* ---------- START ---------- */
+let app;
+document.addEventListener('DOMContentLoaded', () => {
+    app = new GoaEcoGuard();
+    window.app = app; // Make app globally accessible for onclick handlers
+    console.log('🌱 Goa Eco-Guard ready (fully dynamic)');
 });
