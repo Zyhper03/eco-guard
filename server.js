@@ -16,17 +16,14 @@ const app = express();
 ================================ */
 // In your backend server.js
 app.use(cors({
-  origin: [
-    'http://localhost:5500',
-    'http://127.0.0.1:5500',
-    'http://127.0.0.1:5502',
-    'http://localhost:3000',
-    'http://localhost:5501',  // Add if using different port
-    'file://'                 // Add if opening HTML file directly
-  ],
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+    origin: [
+        'https://goaecoguard.netlify.app',
+        'http://localhost:3000',
+        'http://localhost:3001'
+    ],
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -37,18 +34,11 @@ app.use(express.static(path.join(__dirname)));
 /* ===============================
    SUPABASE
 ================================ */
-// Public client (for reads, subject to RLS)
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
-);
+// Supabase configuration
+const supabaseUrl = 'https://jxvrjxlxkikwirfmwozr.supabase.co';
+const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp4dnJqeGx4a2lrd2lyZm13b3pyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjAwNzk4NjksImV4cCI6MjA3NTY1NTg2OX0.BFaVcV__Ep1NfbWgPoA9wAvxQLXXpo5eeeD99n817Pk';
+const supabase = createClient(supabaseUrl, supabaseKey);
 
-// Service role client (for writes, bypasses RLS)
-// Use SUPABASE_SERVICE_ROLE_KEY from .env if available, otherwise fall back to SUPABASE_KEY
-const supabaseAdmin = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY
-);
 
 /* ===============================
    MULTER (IMAGE UPLOAD)
