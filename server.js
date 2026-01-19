@@ -35,10 +35,17 @@ app.use(express.static(path.join(__dirname)));
    SUPABASE
 ================================ */
 // Supabase configuration
-const supabaseUrl = 'https://jxvrjxlxkikwirfmwozr.supabase.co';
-const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp4dnJqeGx4a2lrd2lyZm13b3pyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjAwNzk4NjksImV4cCI6MjA3NTY1NTg2OX0.BFaVcV__Ep1NfbWgPoA9wAvxQLXXpo5eeeD99n817Pk';
-const supabase = createClient(supabaseUrl, supabaseKey);
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
+);
 
+// Service role client (for writes, bypasses RLS)
+// Use SUPABASE_SERVICE_ROLE_KEY from .env if available, otherwise fall back to SUPABASE_KEY
+const supabaseAdmin = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY
+);
 
 /* ===============================
    MULTER (IMAGE UPLOAD)
