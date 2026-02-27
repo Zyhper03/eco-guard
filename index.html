@@ -2,6 +2,19 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <!-- Loader redirect guard: show loading.html on every refresh/direct visit -->
+    <script>
+        (function () {
+            var key = 'fromLoader';
+            if (!sessionStorage.getItem(key)) {
+                // Not coming from loader — redirect to it
+                window.location.replace('loading.html');
+            } else {
+                // Coming from loader — clear the flag so next refresh shows loader again
+                sessionStorage.removeItem(key);
+            }
+        })();
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Goa Eco-Guard - Saving Paradise Together</title>
     <meta name="description" content="Join Goa's citizen-powered environmental protection network. Report pollution, join cleanup missions, and help preserve our coastal paradise through technology and community action.">
@@ -24,18 +37,18 @@
     <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+    <div id="leafContainer" class="leaf-container"></div>
     <!-- Header -->
     <header class="header" id="header">
         <div class="container">
             <div class="header-content">
+
+
                 <!-- Logo -->
                 <div class="logo">
-                    <div class="logo-icon">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1.5 2.5 1 3.5 1 6.5-2.5.5-3.5 1.5-4 3-1 0-2.5.5-4 1.5z"/>
-                            <path d="M3 20c0-3 2-5 5-6"/>
-                        </svg>
-                    </div>
+                 <div class="logo-icon">
+    <img src="logo.png" alt="Goa Eco Guard Logo" class="site-logo">
+</div>
                     <span class="logo-text">
                         <span class="logo-full">Goa Eco-Guard</span>
                         <span class="logo-short">Eco-Guard</span>
@@ -48,19 +61,23 @@
                     <button class="nav-link" data-section="eco-reporting">Report</button>
                     <button class="nav-link" data-section="heatmap">Heatmap</button>
                     <button class="nav-link" data-section="volunteer">Missions</button>
-                    <button class="nav-link" data-section="policy">Policy</button>
+                    <button class="nav-link" data-section="policy">Rules</button>
                     <button class="nav-link" data-section="tourist-guide">Guide</button>
                     <button class="nav-link" data-section="about">About</button>
                     <button class="nav-link" data-section="contact">Contact</button>
                 </nav>
-
+                
                 <!-- CTA Button -->
                 <div class="header-cta">
                     <!-- <button class="btn btn-primary" data-section="eco-reporting">
                         <span class="btn-text-full">Report Now</span>
                         <span class="btn-text-short">Report</span>
                     </button> -->
+                    
                 </div>
+                <!-- <button id="themeToggle" class="btn btn-outline btn-sm">
+                    🌙 Dark
+                </button> -->
 
                 <!-- Mobile Menu Button -->
                 <button class="mobile-menu-btn" id="mobileMenuBtn">
@@ -178,14 +195,14 @@
                 </div>
             </div>
             <button type="button" id="getLocationBtn" class="btn btn-outline w-full">
-                📍 Use Current Location
+                Use Current Location
             </button>
 
             <input type="hidden" id="latitude" name="latitude">
             <input type="hidden" id="longitude" name="longitude">
 
             <p id="locationStatus" style="font-size: 0.85rem; color: green; display: none;">
-                Location captured successfully ✔
+                Location captured successfully 
             </p>
 
             <div class="form-group">
@@ -196,7 +213,7 @@
             <div class="form-group">
                 <label for="image">Photo Evidence *</label>
                 <div class="image-upload-container">
-                    <input type="file" id="image" name="image" accept=".jpg,.jpeg,.png,.heic,.HEIC" required 
+                    <input type="file" id="image" name="image" accept="image/*" required 
                         onchange="previewImage(this)">
                     <div class="upload-area" id="uploadArea">
                         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -208,6 +225,16 @@
                     </div>
                     <div class="image-preview" id="imagePreview"></div>
                 </div>
+                
+                <!-- Camera/Upload Options -->
+                <div class="image-source-options">
+                    <button type="button" id="galleryBtn" class="btn btn-outline image-source-btn">
+                        Choose from Gallery
+                    </button>
+                    <button type="button" id="cameraBtn" class="btn btn-primary image-source-btn">
+                        Take Photo
+                    </button>
+                </div>
             </div>
 
             <button type="submit" class="btn btn-success w-full">
@@ -218,44 +245,6 @@
                 Submit Report
             </button>
         </form>
-
-        <script>
-function previewImage(input) {
-    const preview = document.getElementById('imagePreview');
-    const uploadArea = document.getElementById('uploadArea');
-    
-    if (input.files && input.files[0]) {
-        const reader = new FileReader();
-        
-        reader.onload = function(e) {
-            preview.innerHTML = `
-                <img src="${e.target.result}" alt="Preview">
-                <button type="button" onclick="removeImage()" class="remove-btn">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <line x1="18" y1="6" x2="6" y2="18"/>
-                        <line x1="6" y1="6" x2="18" y2="18"/>
-                    </svg>
-                </button>
-            `;
-            uploadArea.style.display = 'none';
-            preview.style.display = 'block';
-        }
-        
-        reader.readAsDataURL(input.files[0]);
-    }
-}
-
-function removeImage() {
-    const input = document.getElementById('image');
-    const preview = document.getElementById('imagePreview');
-    const uploadArea = document.getElementById('uploadArea');
-    
-    input.value = '';
-    preview.innerHTML = '';
-    preview.style.display = 'none';
-    uploadArea.style.display = 'flex';
-}
-</script>
 
                     <!-- Recent Reports -->
                     <div>
@@ -309,7 +298,7 @@ function removeImage() {
                                 <span style="color: var(--muted-foreground); font-size: 0.9rem; font-weight: 500;">Loading map...</span>
                             </div>
                             <div id="goaMap"></div>
-                            <div class="map-title">🗺️ Real-time Pollution Monitoring - Goa Coastal Region</div>
+                            <div class="map-title">Real-time Pollution Monitoring - Goa Coastal Region</div>
                             
                             <!-- Map Legend -->
                             <div class="map-legend">
@@ -427,89 +416,84 @@ function removeImage() {
             </div>
         </section>
 
-        <!-- Policy Tracker Section -->
-        <section id="policy" class="section section-alt">
-            <div class="container">
-                <div class="section-header">
-                    <h2 class="section-title">
-                        <span class="gradient-text">Policy Tracker</span>
-                    </h2>
-                    <p class="section-subtitle">
-                        Track the progress of environmental policies and initiatives shaping Goa's sustainable future. Transparency in action for a greener tomorrow.
-                    </p>
-                </div>
+        <!-- Tourism Tracker Section -->
+<section id="policy" class="section section-alt">
+    <div class="container">
+        <div class="section-header">
+            <h2 class="section-title">
+                <span class="gradient-text">Tourism Guidelines Regulation</span>
+            </h2>
+            <p class="section-subtitle">
+                Track the progress of environmental policies and initiatives shaping Goa's sustainable future. Transparency in action for a greener tomorrow.
+            </p>
+        </div>
 
-                <!-- Status Overview -->
-                <div class="policy-stats">
-                    <div class="stat-card">
-                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-                            <polyline points="22,4 12,14.01 9,11.01"/>
-                        </svg>
-                        <div class="stat-number" id="implementedCount">0</div>
-                        <div class="stat-label">Implemented</div>
-                    </div>
-                    <div class="stat-card">
-                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="12" cy="12" r="10"/>
-                            <polyline points="12,6 12,12 16,14"/>
-                        </svg>
-                        <div class="stat-number" id="inProgressCount">0</div>
-                        <div class="stat-label">In Progress</div>
-                    </div>
-                    <div class="stat-card">
-                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-                            <line x1="12" y1="9" x2="12" y2="13"/>
-                            <line x1="12" y1="17" x2="12.01" y2="17"/>
-                        </svg>
-                        <div class="stat-number" id="pendingCount">0</div>
-                        <div class="stat-label">Pending</div>
-                    </div>
-                    <div class="stat-card">
-                        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                            <polyline points="14,2 14,8 20,8"/>
-                            <line x1="16" y1="13" x2="8" y2="13"/>
-                            <line x1="16" y1="17" x2="8" y2="17"/>
-                            <polyline points="10,9 9,9 8,9"/>
-                        </svg>
-                        <div class="stat-number" id="planningCount">0</div>
-                        <div class="stat-label">Planning</div>
-                    </div>
-                </div>
+        <!-- NEW Government Info Cards -->
+        <div class="policy-info-cards">
 
-                <!-- Policy Cards -->
-                <div class="policies-list" id="policiesList">
-                    <!-- Policy cards will be dynamically populated -->
-                </div>
+            <!-- Tourist Guidelines -->
+            <div class="policy-info-card">
+                <h3>Government Guidelines for Tourists</h3>
+                <ul class="policy-list">
+                    <li>Carry valid ID and required permits.</li>
+                    <li>Follow local laws and culture as advised by authorities.</li>
+                    <li>Stay out of restricted or protected areas.</li>
+                    <li>Use licensed guides, hotels, and transport.</li>
+                    <li>Do not damage monuments or public property.</li>
+                </ul>
+            </div>
 
-                <!-- Goal Statement -->
-                <div class="card goal-card">
-                    <div class="card-content text-center">
-                        <h3>Goa: India's First Digital Green State</h3>
-                        <p>
-                            Our comprehensive policy framework aims to make Goa a model for sustainable development, 
-                            balancing economic growth with environmental protection through innovative governance and community participation.
-                        </p>
-                        <div class="goal-stats">
-                            <div class="goal-stat">
-                                <div class="goal-number">2025</div>
-                                <div class="goal-label">Carbon Neutral Target</div>
-                            </div>
-                            <div class="goal-stat">
-                                <div class="goal-number">100%</div>
-                                <div class="goal-label">Renewable Energy Goal</div>
-                            </div>
-                            <div class="goal-stat">
-                                <div class="goal-number">Zero</div>
-                                <div class="goal-label">Waste to Landfill</div>
-                            </div>
-                        </div>
+            <!-- Ecosystem Protection -->
+            <div class="policy-info-card">
+                <h3>Rules to Protect the Ecosystem</h3>
+                <ul class="policy-list">
+                    <li>Do not litter — always carry your waste back.</li>
+                    <li>Avoid plastic bottles, bags, and disposables.</li>
+                    <li>Do not disturb wildlife or feed animals.</li>
+                    <li>Stay on marked trails to prevent habitat damage.</li>
+                    <li>Avoid picking plants, shells, or natural souvenirs.</li>
+                    <li>Use eco-friendly transport like cycling or walking.</li>
+                    <li>Conserve water and electricity in hotels.</li>
+                    <li>Support local eco-friendly businesses and products.</li>
+                    <li>Keep noise levels low in forests and beaches.</li>
+                    <li>Leave the place as you found it.</li>
+                </ul>
+            </div>
+
+        </div>
+
+        <!-- Policy Cards (dynamic ones stay) -->
+        <div class="policies-list" id="policiesList">
+            <!-- Policy cards will be dynamically populated -->
+        </div>
+
+        <!-- Goal Statement -->
+        <div class="card goal-card">
+            <div class="card-content text-center">
+                <h3>Goa: India's First Digital Green State</h3>
+                <p>
+                    Our comprehensive policy framework aims to make Goa a model for sustainable development, 
+                    balancing economic growth with environmental protection through innovative governance and community participation.
+                </p>
+                <div class="goal-stats">
+                    <div class="goal-stat">
+                        <div class="goal-number">2025</div>
+                        <div class="goal-label">Carbon Neutral Target</div>
+                    </div>
+                    <div class="goal-stat">
+                        <div class="goal-number">100%</div>
+                        <div class="goal-label">Renewable Energy Goal</div>
+                    </div>
+                    <div class="goal-stat">
+                        <div class="goal-number">Zero</div>
+                        <div class="goal-label">Waste to Landfill</div>
                     </div>
                 </div>
             </div>
-        </section>
+        </div>
+
+    </div>
+</section>
 
         <!-- Tourist Eco Guide Section -->
         <section id="tourist-guide" class="section">
@@ -677,10 +661,8 @@ function removeImage() {
                 <div class="footer-section">
                     <div class="footer-logo">
                         <div class="logo-icon">
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                <path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1.5 2.5 1 3.5 1 6.5-2.5.5-3.5 1.5-4 3-1 0-2.5.5-4 1.5z"/>
-                                <path d="M3 20c0-3 2-5 5-6"/>
-                            </svg>
+    <img src="logo.png" alt="Goa Eco Guard Logo" class="site-logo">
+
                         </div>
                         <span class="logo-text">Goa Eco-Guard</span>
                     </div>
@@ -742,20 +724,20 @@ function removeImage() {
                                 <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/>
                                 <polyline points="22,6 12,13 2,6"/>
                             </svg>
-                            info@goaecoguard.org
+                            ecoguardgoa@gmail.com
                         </div>
                         <div class="contact-item">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>
                             </svg>
-                            +91 832 123 4567
+                            +91 *********
                         </div>
                         <div class="contact-item">
                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/>
                                 <circle cx="12" cy="10" r="3"/>
                             </svg>
-                            Environmental Protection Office<br>Panjim, Goa 403001
+                            Environmental Protection Office<br>*****,****
                         </div>
                     </div>
                 </div>
@@ -764,7 +746,7 @@ function removeImage() {
             <!-- Bottom Section -->
             <div class="footer-bottom">
                 <div class="footer-copyright">
-                    © 2025 Goa Eco-Guard. All rights reserved. | Developed as a Web Development Assignment
+                    © 2026 Goa Eco-Guard. All rights reserved. | Developed as a Web Development Assignment
                 </div>
                 <div class="footer-links">
                     <a href="#">Privacy Policy</a>
@@ -837,5 +819,10 @@ function removeImage() {
 
 <!--  JavaScript -->
 <script src="script.js"></script>
+
+<!-- NEW FEATURES MODULE (uncomment to activate) -->
+<link rel="stylesheet" href="NewFeatures/newFeatures.css">
+<script src="NewFeatures/newFeatures.js"></script>
+
 </body>
 </html>
