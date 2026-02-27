@@ -2,12 +2,22 @@ require('dotenv').config();
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
 const cors = require('cors');
-const bcrypt = require('bcryptjs');
+const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const sharp = require('sharp');
 const fs = require('fs');
 const path = require('path');
+const nodemailer = require('nodemailer');
+
+// Email transporter — uses Gmail App Password from .env
+const emailTransporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
+  }
+});
 
 const app = express();
 
@@ -16,14 +26,17 @@ const app = express();
 ================================ */
 // In your backend server.js
 app.use(cors({
-    origin: [
-        'https://goaecoguard.netlify.app',
-        'http://localhost:3000',
-        'http://localhost:3001'
-    ],
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+  origin: [
+    'http://localhost:5500',
+    'http://127.0.0.1:5500',
+    'http://127.0.0.1:5502',
+    'http://localhost:3000',
+    'http://localhost:5501',  // Add if using different port
+    'file://'                 // Add if opening HTML file directly
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -34,7 +47,7 @@ app.use(express.static(path.join(__dirname)));
 /* ===============================
    SUPABASE
 ================================ */
-// Supabase configuration
+// Public client (for reads, subject to RLS)
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
@@ -48,20 +61,52 @@ const supabaseAdmin = createClient(
 );
 
 /* ===============================
-   MULTER (IMAGE UPLOAD)
+   MULTER (IMAGE UPLOAD - memory storage)
 ================================ */
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadDir = path.join(__dirname, 'uploads');
-    if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname));
-  }
-});
+const upload = multer({ storage: multer.memoryStorage() });
 
-const upload = multer({ storage });
+/* ===============================
+   SUPABASE STORAGE HELPER
+================================ */
+/**
+ * Resize an image buffer with Sharp and upload to Supabase Storage.
+ * Returns the full public URL, or null if anything fails.
+ */
+async function uploadToSupabase(buffer, folder, width = 1200, height = 800) {
+  try {
+    const fileName = `${folder}/${Date.now()}.jpg`;
+
+    // Resize + convert to JPEG
+    const jpegBuffer = await sharp(buffer)
+      .resize(width, height, { fit: 'inside' })
+      .jpeg({ quality: 80 })
+      .toBuffer();
+
+    // Upload to Supabase Storage bucket 'eco-images'
+    const { error } = await supabaseAdmin.storage
+      .from('eco-images')
+      .upload(fileName, jpegBuffer, {
+        contentType: 'image/jpeg',
+        upsert: false
+      });
+
+    if (error) {
+      console.error('❌ Supabase Storage upload error:', error.message);
+      return null;
+    }
+
+    // Build the public URL
+    const { data } = supabaseAdmin.storage
+      .from('eco-images')
+      .getPublicUrl(fileName);
+
+    console.log('✅ Image uploaded to Supabase Storage:', data.publicUrl);
+    return data.publicUrl;
+  } catch (err) {
+    console.error('❌ uploadToSupabase error:', err.message);
+    return null;
+  }
+}
 
 /* ===============================
    AUTH MIDDLEWARE
@@ -83,6 +128,225 @@ const isAdmin = (req, res, next) => {
   }
   next();
 };
+
+/* ===============================
+   EMAIL HELPER
+================================ */
+async function sendMissionEmail({ name, email, missionTitle, missionDate, missionLocation, missionDescription }) {
+  const formattedDate = new Date(missionDate).toLocaleDateString('en-IN', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+  });
+
+  const mailOptions = {
+    from: `"Goa Eco-Guard" <${process.env.EMAIL_USER}>`,
+    to: email,
+    subject: `Mission Confirmed: ${missionTitle} — Goa Eco-Guard 🌿`,
+    html: `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Mission Confirmed</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', 'Segoe UI', Arial, sans-serif; background: #ecfdf5; margin: 0; padding: 24px 16px; }
+    .wrapper { max-width: 620px; margin: 0 auto; }
+    .header { background: linear-gradient(145deg, #14532d 0%, #166534 50%, #15803d 100%); border-radius: 16px 16px 0 0; padding: 44px 36px 36px; text-align: center; position: relative; overflow: hidden; }
+    .header-pattern { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-image: radial-gradient(circle at 20% 50%, rgba(255,255,255,0.05) 0%, transparent 50%), radial-gradient(circle at 80% 20%, rgba(255,255,255,0.07) 0%, transparent 40%); }
+    .header-icon { font-size: 52px; margin-bottom: 14px; display: block; position: relative; }
+    .header h1 { color: #ffffff; font-size: 26px; font-weight: 700; letter-spacing: -0.5px; margin-bottom: 6px; position: relative; }
+    .header-tagline { color: #86efac; font-size: 13.5px; font-weight: 500; position: relative; }
+    .confirmed-badge { display: inline-flex; align-items: center; gap: 6px; background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.25); color: #ffffff; font-size: 12px; font-weight: 700; padding: 5px 14px; border-radius: 20px; letter-spacing: 0.8px; text-transform: uppercase; margin-top: 16px; position: relative; }
+    .body { background: #ffffff; padding: 36px; border-left: 1px solid #d1fae5; border-right: 1px solid #d1fae5; }
+    .greeting { font-size: 19px; color: #111827; font-weight: 700; margin-bottom: 6px; }
+    .subtext { font-size: 14px; color: #6b7280; line-height: 1.6; margin-bottom: 28px; }
+    .mission-box { background: linear-gradient(135deg, #f0fdf4, #dcfce7); border: 1.5px solid #86efac; border-radius: 12px; padding: 20px 22px; margin-bottom: 24px; }
+    .mission-box-label { font-size: 10.5px; color: #16a34a; font-weight: 700; letter-spacing: 1.2px; text-transform: uppercase; margin-bottom: 6px; }
+    .mission-box h2 { font-size: 21px; color: #14532d; font-weight: 700; line-height: 1.3; }
+    .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 24px; }
+    .info-chip { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 10px; padding: 14px 16px; }
+    .info-chip .chip-icon { font-size: 18px; margin-bottom: 6px; display: block; }
+    .info-chip .chip-label { font-size: 10px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.7px; font-weight: 700; margin-bottom: 3px; }
+    .info-chip .chip-value { font-size: 13.5px; color: #111827; font-weight: 600; line-height: 1.4; }
+    .section-divider { display: flex; align-items: center; gap: 12px; margin: 24px 0 18px; }
+    .section-divider span { font-size: 11px; color: #9ca3af; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; white-space: nowrap; }
+    .section-divider::before, .section-divider::after { content: ''; flex: 1; height: 1px; background: #e5e7eb; }
+    .description-box { background: #fafafa; border: 1px solid #e5e7eb; border-radius: 10px; padding: 18px 20px; margin-bottom: 24px; }
+    .description-box p { font-size: 14.5px; color: #374151; line-height: 1.75; }
+    .checklist { margin-bottom: 24px; }
+    .checklist-item { display: flex; align-items: flex-start; gap: 10px; padding: 9px 12px; border-radius: 8px; background: #f9fafb; margin-bottom: 6px; font-size: 13.5px; color: #374151; }
+    .checklist-item .check { color: #16a34a; font-size: 15px; margin-top: 1px; flex-shrink: 0; }
+    .notice { background: #fffbeb; border: 1px solid #fde68a; border-radius: 10px; padding: 14px 16px; display: flex; gap: 12px; align-items: flex-start; margin-bottom: 24px; }
+    .notice-icon { font-size: 18px; flex-shrink: 0; }
+    .notice-text { font-size: 13px; color: #92400e; line-height: 1.55; }
+    .notice-text strong { display: block; margin-bottom: 3px; color: #78350f; }
+    .steps { margin-bottom: 24px; }
+    .step-row { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 14px; }
+    .step-num { width: 28px; height: 28px; border-radius: 50%; background: #16a34a; color: #fff; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 1px; }
+    .step-content .step-title { font-size: 13.5px; font-weight: 600; color: #111827; margin-bottom: 2px; }
+    .step-content .step-desc { font-size: 12.5px; color: #6b7280; }
+    .impact-row { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; margin-bottom: 24px; }
+    .impact-card { text-align: center; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 10px; padding: 14px 10px; }
+    .impact-card .impact-num { font-size: 22px; }
+    .impact-card .impact-label { font-size: 10.5px; color: #6b7280; margin-top: 3px; }
+    .cta-section { text-align: center; margin-bottom: 28px; }
+    .cta-btn { display: inline-block; background: linear-gradient(135deg, #16a34a, #15803d); color: #ffffff; font-size: 14px; font-weight: 700; padding: 13px 30px; border-radius: 8px; text-decoration: none; letter-spacing: 0.3px; }
+    .cta-sub { font-size: 12px; color: #9ca3af; margin-top: 10px; }
+    .divider-line { border: none; border-top: 1px solid #e5e7eb; margin: 24px 0; }
+    .footer-note { font-size: 12px; color: #9ca3af; text-align: center; line-height: 1.7; }
+    .email-footer { background: #f0fdf4; border: 1px solid #d1fae5; border-top: none; border-radius: 0 0 16px 16px; text-align: center; padding: 18px; font-size: 11.5px; color: #6b7280; }
+    .footer-links { margin-bottom: 6px; }
+    .footer-links a { color: #16a34a; text-decoration: none; margin: 0 8px; }
+  </style>
+</head>
+<body>
+<div class="wrapper">
+
+  <div class="header">
+    <div class="header-pattern"></div>
+    <span class="header-icon">🌿</span>
+    <h1>Goa Eco-Guard</h1>
+    <p class="header-tagline">Protecting Goa's environment, one mission at a time</p>
+    <div class="confirmed-badge">✓ &nbsp; Registration Confirmed</div>
+  </div>
+
+  <div class="body">
+    <p class="greeting">Hi ${name}! 👋</p>
+    <p class="subtext">You're officially part of the mission. We're excited to have you join us in making a real difference for Goa's environment. Here's everything you need to know before the big day.</p>
+
+    <div class="mission-box">
+      <div class="mission-box-label">🎯 Your Registered Mission</div>
+      <h2>${missionTitle}</h2>
+    </div>
+
+    <div class="info-grid">
+      <div class="info-chip">
+        <span class="chip-icon">📅</span>
+        <div class="chip-label">Mission Date</div>
+        <div class="chip-value">${formattedDate}</div>
+      </div>
+      <div class="info-chip">
+        <span class="chip-icon">📍</span>
+        <div class="chip-label">Location</div>
+        <div class="chip-value">${missionLocation}</div>
+      </div>
+      <div class="info-chip">
+        <span class="chip-icon">⏰</span>
+        <div class="chip-label">Report Time</div>
+        <div class="chip-value">8:00 AM (sharp)</div>
+      </div>
+      <div class="info-chip">
+        <span class="chip-icon">✉️</span>
+        <div class="chip-label">Registered Email</div>
+        <div class="chip-value">${email}</div>
+      </div>
+    </div>
+
+    ${missionDescription ? `
+    <div class="section-divider"><span>About This Mission</span></div>
+    <div class="description-box">
+      <p>${missionDescription}</p>
+    </div>
+    ` : ''}
+
+    <div class="section-divider"><span>What to Bring</span></div>
+    <div class="checklist">
+      <div class="checklist-item"><span class="check">✔</span> Comfortable clothes you don't mind getting dirty</div>
+      <div class="checklist-item"><span class="check">✔</span> Closed-toe shoes / sturdy footwear</div>
+      <div class="checklist-item"><span class="check">✔</span> Water bottle (stay hydrated!)</div>
+      <div class="checklist-item"><span class="check">✔</span> Sunscreen and a cap/hat</div>
+      <div class="checklist-item"><span class="check">✔</span> Gloves (we'll also have extras on-site)</div>
+      <div class="checklist-item"><span class="check">✔</span> A positive attitude and team spirit 💪</div>
+    </div>
+
+    <div class="notice">
+      <span class="notice-icon">⚠️</span>
+      <div class="notice-text">
+        <strong>Important Reminder</strong>
+        Please arrive 10–15 minutes early to sign in, collect equipment, and get a quick briefing from the team lead. Latecomers may miss the group orientation.
+      </div>
+    </div>
+
+    <div class="section-divider"><span>Day-of Steps</span></div>
+    <div class="steps">
+      <div class="step-row">
+        <div class="step-num">1</div>
+        <div class="step-content">
+          <div class="step-title">Arrive at ${missionLocation}</div>
+          <div class="step-desc">Show this email or give your name at the registration desk.</div>
+        </div>
+      </div>
+      <div class="step-row">
+        <div class="step-num">2</div>
+        <div class="step-content">
+          <div class="step-title">Team Briefing & Equipment</div>
+          <div class="step-desc">Collect gloves, bags, and tools. Meet your team and group lead.</div>
+        </div>
+      </div>
+      <div class="step-row">
+        <div class="step-num">3</div>
+        <div class="step-content">
+          <div class="step-title">Mission Begins!</div>
+          <div class="step-desc">Work together to clean up and document environmental issues.</div>
+        </div>
+      </div>
+      <div class="step-row">
+        <div class="step-num">4</div>
+        <div class="step-content">
+          <div class="step-title">Report & Wrap Up</div>
+          <div class="step-desc">Submit findings to the Goa Eco-Guard app and earn your impact points!</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-divider"><span>Your Impact Matters</span></div>
+    <div class="impact-row">
+      <div class="impact-card">
+        <div class="impact-num">🌊</div>
+        <div class="impact-label">Beaches & rivers cleaned</div>
+      </div>
+      <div class="impact-card">
+        <div class="impact-num">🌱</div>
+        <div class="impact-label">Trees & nature protected</div>
+      </div>
+      <div class="impact-card">
+        <div class="impact-num">🤝</div>
+        <div class="impact-label">Community built together</div>
+      </div>
+    </div>
+
+    <div class="cta-section">
+      <a href="https://goa-eco-guard.app" class="cta-btn">🌿 Visit Goa Eco-Guard App</a>
+      <p class="cta-sub">Track missions, view hotspots, and earn points for every action</p>
+    </div>
+
+    <hr class="divider-line">
+    <p class="footer-note">
+      Questions? Reply to this email or visit our app.<br>
+      If you did not register for this mission, you can safely ignore this email.<br><br>
+      <strong style="color:#374151;">© ${new Date().getFullYear()} Goa Eco-Guard</strong> — Protecting Goa's environment, together.
+    </p>
+  </div>
+
+  <div class="email-footer">
+    <div class="footer-links">
+      <a href="https://goa-eco-guard.app">Website</a>
+      <a href="https://goa-eco-guard.app/missions">Missions</a>
+      <a href="mailto:${process.env.EMAIL_USER}">Contact Us</a>
+    </div>
+    goa-eco-guard.app &bull; Panaji, Goa, India 🇮🇳
+  </div>
+
+</div>
+</body>
+</html>
+    `
+  };
+
+  await emailTransporter.sendMail(mailOptions);
+}
 
 /* ===============================
    HEALTH
@@ -170,11 +434,17 @@ app.post('/api/auth/register', async (req, res) => {
 
   const { data, error } = await supabaseAdmin
     .from('users')
-    .insert([{ name, email, password: hashed, phone }])
+    .insert([{ name, email, password: hashed, phone, role: 'user' }])
     .select()
     .single();
 
-  if (error) return res.status(400).json({ error: error.message });
+  if (error) {
+    console.error('Registration error:', error.message);
+    if (error.message.includes('duplicate key') || error.code === '23505') {
+      return res.status(400).json({ error: 'You are already registered with this email. Please login instead.' });
+    }
+    return res.status(400).json({ error: error.message });
+  }
 
   const token = jwt.sign(
     { userId: data.id, role: data.role },
@@ -195,10 +465,10 @@ app.post('/api/auth/login', async (req, res) => {
     .eq('email', email)
     .single();
 
-  if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+  if (!user) return res.status(401).json({ error: 'Invalid email or password' });
 
   const match = await bcrypt.compare(password, user.password);
-  if (!match) return res.status(401).json({ error: 'Invalid credentials' });
+  if (!match) return res.status(401).json({ error: 'Invalid email or password' });
 
   const token = jwt.sign(
     { userId: user.id, role: user.role },
@@ -235,36 +505,161 @@ app.post(
         return res.status(400).json({ error: 'Location required' });
       }
 
-      let imageName = null;
+      let imageUrl = null;
 
+      // LLM/AI Verification + Supabase Storage Upload
       if (req.file) {
+        const imageBuffer = req.file.buffer; // from memoryStorage — no disk read needed
+
         try {
-          imageName = `report-${Date.now()}.jpg`;
-          const outPath = `uploads/${imageName}`;
-          console.log('Processing image:', req.file.path, '→', outPath);
+          console.log('🤖 AI Verifying image content...');
+          const { OpenAI } = require('openai');
 
-          await sharp(req.file.path)
-            .resize(1200, 800, { fit: 'inside' })
-            .jpeg({ quality: 80 })
-            .toFile(outPath);
+          const client = new OpenAI({
+            apiKey: process.env.OPENAI_API_KEY,
+            baseURL: process.env.OPENAI_BASE_URL
+          });
 
-          fs.unlinkSync(req.file.path);
-          console.log('✅ Image processed successfully');
-        } catch (imgError) {
-          console.error('❌ Image processing error:', imgError);
-          // Continue without image
+          // Convert to JPEG for AI
+          let jpegBuffer;
+          try {
+            jpegBuffer = await sharp(imageBuffer)
+              .resize(1024, 1024, { fit: 'inside' })
+              .jpeg()
+              .toBuffer();
+          } catch (sharpError) {
+            console.error('❌ Failed to convert image for AI:', sharpError);
+            jpegBuffer = imageBuffer;
+          }
+
+          const base64Image = jpegBuffer.toString('base64');
+
+          console.log('📤 Sending image to AI model...');
+          const response = await client.chat.completions.create({
+            model: "nvidia/nemotron-nano-12b-v2-vl:free",
+            messages: [
+              {
+                role: "user",
+                content: [
+                  { type: "text", text: "Look at this image. Is it safe for a public eco-cleaning report? Choose ONE category:\n\n1. NORMAL: Garbage, trash, plastic, waste, nature, outdoors. (SAFE)\n2. SENSITIVE: People, faces, selfies, children, nudity, violence. (UNSAFE)\n3. UNWANTED: Non-eco related, memes, screenshots. (UNSAFE)\n\nReply with ONLY the category word: NORMAL, SENSITIVE, or UNWANTED." },
+                  { type: "image_url", image_url: { url: `data:image/jpeg;base64,${base64Image}` } }
+                ]
+              }
+            ],
+            extra_headers: {
+              "HTTP-Referer": "http://localhost:3000",
+              "X-Title": "Eco-Guard Classifier"
+            }
+          });
+
+          if (!response.choices || response.choices.length === 0) {
+            console.error('❌ AI returned no choices (likely filtered).');
+            return res.status(400).json({
+              error: 'AI could not verify image safety (content filtering).',
+              type: 'ai_filtering'
+            });
+          }
+
+          const aiResult = response.choices[0].message.content.toLowerCase();
+          console.log('🤖 AI Result:', aiResult);
+
+          if (aiResult.includes('sensitive') || aiResult.includes('unwanted') || aiResult.includes('remove') || aiResult.includes('unsafe') || aiResult.includes('people')) {
+            console.warn('❌ AI detected sensitive content. Rejecting upload.');
+            return res.status(400).json({
+              error: 'Sensitive or inappropriate content detected by AI.',
+              type: 'sensitive_content'
+            });
+          }
+
+          console.log('✅ AI verified image as safe.');
+
+        } catch (aiError) {
+          console.error('⚠️ AI Verification failed (proceeding with upload):', aiError.message);
+        }
+
+        // Upload to Supabase Storage
+        imageUrl = await uploadToSupabase(imageBuffer, 'reports');
+        if (!imageUrl) {
+          console.warn('⚠️ Image upload to Supabase failed — report will be saved without image.');
         }
       }
+
+      // ✅ CHECK FOR DUPLICATE REPORTS
+      // Check if a report already exists with same location (lat/lng) and description
+      console.log('🔍 Checking for duplicate reports...');
+
+      const lat = parseFloat(latitude);
+      const lng = parseFloat(longitude);
+      const descLower = description.toLowerCase().trim();
+
+      console.log(`📍 Checking coordinates: lat=${lat}, lng=${lng}`);
+      console.log(`📝 Description (normalized): "${descLower}"`);
+      console.log(`🔎 Querying database for existing reports at this location...`);
+
+      // Query for existing reports with same coordinates and similar description
+      const { data: existingReports, error: checkError } = await supabaseAdmin
+        .from('eco_reports')
+        .select('id, description, latitude, longitude, created_at')
+        .eq('latitude', lat)
+        .eq('longitude', lng)
+        .is('deleted_at', null); // Only check non-deleted reports
+
+      if (checkError) {
+        console.warn('⚠️ Error checking for duplicates:', checkError);
+        // Continue even if check fails
+      } else if (existingReports && existingReports.length > 0) {
+        console.log(`📊 Found ${existingReports.length} report(s) at same coordinates`);
+
+        // Check if description matches (case-insensitive)
+        const duplicate = existingReports.find(report =>
+          report.description.toLowerCase().trim() === descLower
+        );
+
+        if (duplicate) {
+          console.warn('\n' + '='.repeat(60));
+          console.warn('❌ DUPLICATE DETECTED!');
+          console.warn('='.repeat(60));
+          console.warn(`   Existing Report ID: ${duplicate.id}`);
+          console.warn(`   Existing Description: "${duplicate.description}"`);
+          console.warn(`   Created At: ${duplicate.created_at}`);
+          console.warn(`   New Description: "${description}"`);
+          console.warn(`   Coordinates: (${lat}, ${lng})`);
+          console.warn('🚫 Rejecting duplicate submission');
+          console.warn('='.repeat(60) + '\n');
+
+          // Delete uploaded image if it exists
+          if (imageName) {
+            try {
+              fs.unlinkSync(`uploads/${imageName}`);
+              console.log('🗑️ Deleted duplicate image:', imageName);
+            } catch (e) {
+              console.error('⚠️ Failed to delete image:', e.message);
+            }
+          }
+
+          return res.status(400).json({
+            error: 'Duplicate report detected. A report with the same location and description already exists.',
+            type: 'duplicate_report',
+            existingReportId: duplicate.id
+          });
+        } else {
+          console.log('✅ Same coordinates but different descriptions - not a duplicate');
+        }
+      } else {
+        console.log('✅ No reports found at this location');
+      }
+
+      console.log('✅ No duplicate found, proceeding with insertion');
 
       // Try inserting with user_id first
       let reportData = {
         user_id: req.user.userId,
         location,
         description,
-        latitude: parseFloat(latitude),
-        longitude: parseFloat(longitude),
-        image: imageName,
-        status: 'pending'
+        latitude: lat,
+        longitude: lng,
+        image: imageUrl,  // full Supabase Storage public URL (or null)
+        status: 'approved'  // auto-approved after AI verification
       };
 
       console.log('📤 Inserting report to database:', reportData);
@@ -283,8 +678,8 @@ app.post(
           description,
           latitude: parseFloat(latitude),
           longitude: parseFloat(longitude),
-          image: imageName,
-          status: 'pending'
+          image: imageUrl,
+          status: 'approved'  // auto-approved after AI verification
         };
 
         const retryResult = await supabaseAdmin
@@ -483,10 +878,10 @@ app.post('/api/join', async (req, res) => {
     // mission_id can be UUID or integer - Supabase handles both
     const missionId = mission_id.toString().trim();
 
-    // Verify mission exists
+    // Verify mission exists + fetch details for the email
     const { data: mission, error: missionError } = await supabase
       .from('missions')
-      .select('id')
+      .select('id, title, date, location, description')
       .eq('id', missionId)
       .single();
 
@@ -518,6 +913,22 @@ app.post('/api/join', async (req, res) => {
         return res.status(400).json({ error: 'Invalid mission ID' });
       }
       return res.status(400).json({ error: error.message || 'Failed to register for mission' });
+    }
+
+    // Send confirmation email — non-blocking (never breaks the join)
+    if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
+      sendMissionEmail({
+        name: name.trim(),
+        email: email.trim().toLowerCase(),
+        missionTitle: mission.title,
+        missionDate: mission.date,
+        missionLocation: mission.location,
+        missionDescription: mission.description
+      })
+        .then(() => console.log(` Email sent to ${email.trim().toLowerCase()}`))
+        .catch(err => console.warn(`⚠️ Email failed (non-blocking): ${err.message}`));
+    } else {
+      console.warn('EMAIL_USER or EMAIL_PASS not set in .env — email skipped');
     }
 
     res.json({ success: true, data });
@@ -613,126 +1024,6 @@ app.get('/api/hotspots', async (req, res) => {
   } catch (err) {
     console.error('Hotspot error:', err);
     res.status(500).json({ error: 'Failed to load hotspots' });
-  }
-});
-
-
-/* ===============================
-   POLICY TRACKER (REAL-TIME AGGREGATION)
-   Computes policy progress and status from live reports
-================================= */
-app.get('/api/policies', async (req, res) => {
-  try {
-    // 1) Try to fetch policies table (if exists)
-    let { data: policiesData, error: polError } = await supabase
-      .from('policies')
-      .select('*');
-
-    if (polError) {
-      console.warn('Policies table not available or query failed:', polError.message || polError);
-      policiesData = null;
-    }
-
-    // 2) Fetch non-deleted reports (we'll aggregate in-memory)
-    const { data: reports, error: reportsError } = await supabase
-      .from('eco_reports')
-      .select('id, policy_id, category, status, created_at, impact_metric')
-      .is('deleted_at', null);
-
-    if (reportsError) {
-      console.error('Error fetching reports for policies:', reportsError.message || reportsError);
-      return res.status(500).json({ error: 'Failed to load reports' });
-    }
-
-    // 3) Build base policies list. If no policies table, derive from distinct categories
-    let policies = [];
-    if (Array.isArray(policiesData) && policiesData.length > 0) {
-      policies = policiesData.map(p => ({ ...p }));
-    } else {
-      // derive unique categories from reports
-      const cats = Array.from(new Set((reports || []).map(r => r.category).filter(Boolean)));
-      policies = cats.map((c, i) => ({ id: `cat-${i}`, title: c, category: c, description: null, responsible_agency: null, timeline_phase: null }));
-    }
-
-    // 4) Map policies by string key for robust matching
-    const policyMap = new Map();
-    policies.forEach(p => policyMap.set(String(p.id), { ...p, total: 0, verified: 0, resolved: 0, last_updated: null, impact: 0 }));
-
-    // 5) Aggregate reports into policy buckets
-    (reports || []).forEach(r => {
-      // choose match: explicit policy_id first, then category
-      let key = r.policy_id !== null && r.policy_id !== undefined ? String(r.policy_id) : null;
-
-      if (!key && r.category) {
-        // try to find a policy with same category
-        const found = policies.find(p => p.category && String(p.category) === String(r.category));
-        if (found) key = String(found.id);
-      }
-
-      // if still no key, skip (uncategorized)
-      if (!key) return;
-
-      if (!policyMap.has(key)) {
-        // create lightweight placeholder policy when reports reference unknown policy id
-        policyMap.set(key, { id: key, title: r.category || `Policy ${key}`, category: r.category || null, description: null, responsible_agency: null, timeline_phase: null, total: 0, verified: 0, resolved: 0, last_updated: null, impact: 0 });
-      }
-
-      const bucket = policyMap.get(key);
-      bucket.total = (bucket.total || 0) + 1;
-      const st = (r.status || '').toLowerCase();
-      if (st === 'verified') bucket.verified = (bucket.verified || 0) + 1;
-      if (st === 'resolved' || st === 'approved') bucket.resolved = (bucket.resolved || 0) + 1;
-      if (r.impact_metric) bucket.impact = (bucket.impact || 0) + Number(r.impact_metric || 0);
-      if (r.created_at) {
-        const t = new Date(r.created_at);
-        if (!bucket.last_updated || t > new Date(bucket.last_updated)) bucket.last_updated = r.created_at;
-      }
-      policyMap.set(key, bucket);
-    });
-
-    // 6) Compute progress, status, and prepare result array
-    const result = Array.from(policyMap.values()).map(p => {
-      const total = p.total || 0;
-      const resolved = p.resolved || 0;
-      const verified = p.verified || 0;
-      const progress = total ? Math.round((resolved / total) * 100) : 0;
-
-      let status = 'Planning';
-      if (total === 0) status = 'Planning';
-      else if (progress >= 80) status = 'Implemented';
-      else if (verified > 0 && resolved > 0) status = 'In Progress';
-      else status = 'Pending';
-
-      return {
-        id: p.id,
-        title: p.title || p.category || `Policy ${p.id}`,
-        category: p.category || null,
-        description: p.description || null,
-        responsible_agency: p.responsible_agency || null,
-        timeline_phase: p.timeline_phase || null,
-        total_related_reports: total,
-        verified_reports: verified,
-        resolved_reports: resolved,
-        progress,
-        status,
-        impact: p.impact || 0,
-        last_updated: p.last_updated || p.updated_at || null
-      };
-    });
-
-    // 7) Summary counts
-    const summary = {
-      implemented: result.filter(r => r.status === 'Implemented').length,
-      in_progress: result.filter(r => r.status === 'In Progress').length,
-      pending: result.filter(r => r.status === 'Pending').length,
-      planning: result.filter(r => r.status === 'Planning').length,
-      total: result.length
-    };
-
-    res.json({ policies: result, summary });
-  } catch (err) {
-    console.error('Policy tracker error:', err);
-    res.status(500).json({ error: err.message });
   }
 });
 
@@ -878,17 +1169,11 @@ app.post(
         });
       }
 
-      let imageName = null;
+      let imageUrl = null;
 
       if (req.file) {
-        imageName = `mission-${Date.now()}.jpg`;
-
-        await sharp(req.file.path)
-          .resize(1200, 800)
-          .jpeg({ quality: 80 })
-          .toFile(path.join(__dirname, 'uploads', imageName));
-
-        fs.unlinkSync(req.file.path);
+        imageUrl = await uploadToSupabase(req.file.buffer, 'missions');
+        if (!imageUrl) console.warn('⚠️ Mission image upload failed — saving without image.');
       }
 
       const { data, error } = await supabase.from('missions').insert([{
@@ -896,7 +1181,7 @@ app.post(
         description,
         date,
         location,
-        image: imageName
+        image: imageUrl
       }]).select().single();
 
       if (error) {
@@ -949,24 +1234,18 @@ app.post(
 
     const { title, description, category } = req.body;
 
-    let imageName = null;
+    let imageUrl = null;
 
     if (req.file) {
-      imageName = `eco-${Date.now()}.jpg`;
-
-      await sharp(req.file.path)
-        .resize(1200, 800)
-        .jpeg({ quality: 80 })
-        .toFile(`uploads/${imageName}`);
-
-      fs.unlinkSync(req.file.path);
+      imageUrl = await uploadToSupabase(req.file.buffer, 'eco-guide');
+      if (!imageUrl) console.warn('⚠️ Eco guide image upload failed — saving without image.');
     }
 
     const { error } = await supabase.from('eco_guide').insert([{
       title,
       description,
       category,
-      image: imageName
+      image: imageUrl
     }]);
 
     if (error) return res.status(400).json({ error: error.message });
@@ -987,14 +1266,10 @@ app.post(
   async (req, res) => {
     const { name, rating, location, description, category, price, features, details } = req.body;
 
-    let imageName = null;
+    let imageUrl = null;
     if (req.file) {
-      imageName = `ecospot-${Date.now()}.jpg`;
-      await sharp(req.file.path)
-        .resize(1200, 800, { fit: 'inside' })
-        .jpeg({ quality: 80 })
-        .toFile(`uploads/${imageName}`);
-      fs.unlinkSync(req.file.path);
+      imageUrl = await uploadToSupabase(req.file.buffer, 'eco-spots');
+      if (!imageUrl) console.warn('⚠️ Eco spot image upload failed — saving without image.');
     }
 
     const { data, error } = await supabase.from('eco_spots').insert([{
@@ -1006,7 +1281,7 @@ app.post(
       price: price || null,
       features: features || null,
       details: details || null,
-      image: imageName
+      image: imageUrl
     }]).select().single();
 
     if (error) return res.status(400).json({ error: error.message });
@@ -1058,13 +1333,12 @@ app.put(
     };
 
     if (req.file) {
-      const imageName = `ecospot-${Date.now()}.jpg`;
-      await sharp(req.file.path)
-        .resize(1200, 800, { fit: 'inside' })
-        .jpeg({ quality: 80 })
-        .toFile(`uploads/${imageName}`);
-      fs.unlinkSync(req.file.path);
-      updateData.image = imageName;
+      const newUrl = await uploadToSupabase(req.file.buffer, 'eco-spots');
+      if (newUrl) {
+        updateData.image = newUrl;
+      } else {
+        console.warn('⚠️ Eco spot image update upload failed — keeping existing image.');
+      }
     }
 
     // Remove undefined fields
@@ -1100,18 +1374,32 @@ app.delete('/api/admin/eco-spots/:id', authenticateToken, isAdmin, async (req, r
 // Leaderboard
 app.get('/api/leaderboard', async (req, res) => {
   try {
-    // Get reports count per user
+    // 1) Reports count per user (non-deleted only)
     const { data: reports } = await supabase
       .from('eco_reports')
       .select('user_id, users(name)')
+      .is('deleted_at', null)
       .not('user_id', 'is', null);
 
-    // Get missions joined count per user
-    const { data: missions } = await supabase
-      .from('mission_registrations')
-      .select('email');
+    // 2) Total non-deleted reports for the stat counter
+    const { count: totalReportCount } = await supabase
+      .from('eco_reports')
+      .select('*', { count: 'exact', head: true })
+      .is('deleted_at', null);
 
-    // Calculate scores (simplified)
+    // 3) Missions whose date has passed = completed
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const { data: completedMissions } = await supabase
+      .from('missions')
+      .select('id')
+      .lt('date', today);
+
+    const completedCount = completedMissions?.length || 0;
+
+    // 4) Trees planted estimate (5 trees per completed mission)
+    const treesPlanted = completedCount * 5;
+
+    // Calculate user scores (simplified)
     const userScores = {};
     reports?.forEach(r => {
       const userId = r.user_id;
@@ -1128,9 +1416,9 @@ app.get('/api/leaderboard', async (req, res) => {
     res.json({
       top3: leaderboard.slice(0, 3),
       list: leaderboard.slice(3),
-      totalReports: reports?.length || 0,
-      totalMissions: missions?.length || 0,
-      totalTrees: Math.floor((reports?.length || 0) * 0.5) // Estimate
+      totalReports: totalReportCount || 0,
+      totalMissions: completedCount,
+      totalTrees: treesPlanted
     });
   } catch (err) {
     console.error('Leaderboard error:', err);
@@ -1141,7 +1429,7 @@ app.get('/api/leaderboard', async (req, res) => {
 // Report Statistics (for policy tracker)
 app.get('/api/report-stats', async (req, res) => {
   try {
-    const { data: reports } = await supabase
+    const { data: reports } = await supabaseAdmin
       .from('eco_reports')
       .select('status')
       .is('deleted_at', null);
@@ -1157,6 +1445,41 @@ app.get('/api/report-stats', async (req, res) => {
   } catch (err) {
     console.error('Report stats error:', err);
     res.json({ total: 0, pending: 0, approved: 0, rejected: 0 });
+  }
+});
+
+app.get('/api/public-stats', async (req, res) => {
+  try {
+    // 1) Warriors (Total Users)
+    const { count: userCount, error: userError } = await supabaseAdmin
+      .from('users')
+      .select('*', { count: 'exact', head: true });
+    
+    if (userError) throw userError;
+
+    // 2) Reports (Non-deleted)
+    const { count: reportCount, error: reportError } = await supabaseAdmin
+      .from('eco_reports')
+      .select('*', { count: 'exact', head: true })
+      .is('deleted_at', null);
+
+    if (reportError) throw reportError;
+
+    // 3) Missions (Total)
+    const { count: missionCount, error: missionError } = await supabaseAdmin
+      .from('missions')
+      .select('*', { count: 'exact', head: true });
+    
+    if (missionError) throw missionError;
+
+    res.json({
+      warriors: userCount || 0,
+      reports: reportCount || 0,
+      missions: missionCount || 0
+    });
+  } catch (err) {
+    console.error('❌ Public stats error:', err.message || err);
+    res.status(500).json({ warriors: 0, reports: 0, missions: 0 });
   }
 });
 
@@ -1191,32 +1514,15 @@ app.get('/api/experiences', async (req, res) => {
 });
 
 /* ===============================
+   NEW FEATURES MODULE (uncomment to activate)
+================================ */
+app.use(require('./NewFeatures/newFeaturesRoutes'));
+require('./NewFeatures/reminderCron');
+
+/* ===============================
    START SERVER
 ================================ */
-const DEFAULT_PORT = parseInt(process.env.PORT, 10) || 3000;
-
-function startServer(port = DEFAULT_PORT, attempts = 8) {
-  const server = app.listen(port, () => {
-    console.log(`🚀 Goa Eco-Guard backend running on port ${port}`);
-  });
-
-  server.on('error', (err) => {
-    if (err && err.code === 'EADDRINUSE' && attempts > 0) {
-      console.warn(`Port ${port} in use — trying ${port + 1} (attempts left: ${attempts - 1})`);
-      setTimeout(() => startServer(port + 1, attempts - 1), 200);
-    } else {
-      console.error('Server failed to start:', err);
-      process.exit(1);
-    }
-  });
-}
-
-// Allow skipping the HTTP listener when the service should not bind to a port
-// (useful when only deploying frontend to Netlify and using a remote backend).
-const SKIP_LISTEN = process.env.SKIP_LISTEN === 'true' || process.env.NO_LISTEN === '1';
-if (SKIP_LISTEN) {
-  console.log('SKIP_LISTEN enabled — HTTP server will not start.');
-  module.exports = app; // export app for tests or external runners
-} else {
-  startServer();
-}
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Goa Eco-Guard backend running on port ${PORT}`);
+});

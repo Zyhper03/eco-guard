@@ -6,3 +6,10 @@ uploads/
 
 # lockfiles (optional)
 # package-lock.json
+
+node_modules/
+uploads/
+.env
+node_modules/
+uploads/
+.env

@@ -2,16 +2,112 @@
 // Goa Eco-Guard - Final Script
 // ===============================
 
-// Production API endpoint (Render)
-const API_BASE = 'https://eco-guard-backend.onrender.com';
+const API_BASE =
+    window.__API_BASE__ ||
+    document.querySelector('meta[name="api-base"]')?.content ||
+    ((location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+        ? 'http://localhost:3000'
+        : location.origin);
+
+function setCookie(name, value, days) {
+    const expires = new Date(Date.now() + days * 864e5).toUTCString();
+    const secure = location.protocol === 'https:' ? '; secure' : '';
+    document.cookie = encodeURIComponent(name) + '=' + encodeURIComponent(value) + '; expires=' + expires + '; path=/; samesite=lax' + secure;
+}
+
+function getCookie(name) {
+    const cookies = document.cookie ? document.cookie.split('; ') : [];
+    for (let i = 0; i < cookies.length; i++) {
+        const parts = cookies[i].split('=');
+        const key = decodeURIComponent(parts.shift());
+        if (key === name) return decodeURIComponent(parts.join('='));
+    }
+    return null;
+}
+
+function eraseCookie(name) {
+    const secure = location.protocol === 'https:' ? '; secure' : '';
+    document.cookie = encodeURIComponent(name) + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; samesite=lax' + secure;
+}
+
+// ---------- Dark mode support (also used by login/theme.js) ----------
+(function() {
+    const themeToggle = document.getElementById('themeToggle');
+    if (localStorage.getItem('theme') === 'dark') {
+        document.body.classList.add('dark');
+        if (themeToggle) themeToggle.innerText = '☀️ Light';
+    }
+    themeToggle?.addEventListener('click', () => {
+        document.body.classList.toggle('dark');
+        if (document.body.classList.contains('dark')) {
+            localStorage.setItem('theme', 'dark');
+            if (themeToggle) themeToggle.innerText = '☀️ Light';
+        } else {
+            localStorage.setItem('theme', 'light');
+            if (themeToggle) themeToggle.innerText = '🌙 Dark';
+        }
+    });
+})();
+
+/* ===============================
+   JOINED MISSIONS (localStorage — per user)
+================================ */
+function _getJoinedKey() {
+  try {
+    const u = JSON.parse(localStorage.getItem('ecoUser') || '{}');
+    if (u && u.id) return 'ecoguard_joined_' + u.id;
+  } catch {}
+  return null; // not logged in → no key
+}
+
+function getJoinedMissions() {
+  const key = _getJoinedKey();
+  if (!key) return []; // not logged in = nothing joined
+  try {
+    const ls = localStorage.getItem(key);
+    return ls ? JSON.parse(ls) : [];
+  } catch { return []; }
+}
+
+function markMissionJoined(missionId) {
+  const key = _getJoinedKey();
+  if (!key) return; // shouldn't happen, but guard
+  const joined = getJoinedMissions();
+  if (!joined.includes(String(missionId))) {
+    joined.push(String(missionId));
+    localStorage.setItem(key, JSON.stringify(joined));
+  }
+}
+
+/**
+ * Resolve an image field from the DB to a usable <img> src.
+ * New images: full Supabase Storage URL (starts with 'http') → used directly.
+ * Old/legacy images: just a filename → prefixed with local /uploads/ path.
+ */
+function resolveImageUrl(image) {
+  if (!image) return null;
+  return image.startsWith('http') ? image : `${API_BASE}/uploads/${encodeURIComponent(image)}`;
+}
 
 /* ===============================
    AUTH MANAGER
 ================================ */
 class AuthManager {
     constructor() {
-        this.token = localStorage.getItem('ecoToken');
-        this.user = JSON.parse(localStorage.getItem('ecoUser')) || null;
+        const lsToken = localStorage.getItem('ecoToken');
+        const lsUser = localStorage.getItem('ecoUser');
+        const ckToken = getCookie('ecoToken');
+        const ckUser = getCookie('ecoUser');
+        let userObj = null;
+        if (lsUser) {
+            try { userObj = JSON.parse(lsUser); } catch { userObj = null; }
+        } else if (ckUser) {
+            try { userObj = JSON.parse(ckUser); } catch { userObj = null; }
+        }
+        this.token = lsToken || ckToken || null;
+        this.user = userObj;
+        if (!lsToken && ckToken) localStorage.setItem('ecoToken', ckToken);
+        if (!lsUser && ckUser) localStorage.setItem('ecoUser', ckUser);
     }
 
     isAuthenticated() {
@@ -41,6 +137,8 @@ class AuthManager {
 
         localStorage.setItem('ecoToken', data.token);
         localStorage.setItem('ecoUser', JSON.stringify(data.user));
+        setCookie('ecoToken', data.token, 30);
+        setCookie('ecoUser', JSON.stringify(data.user), 30);
 
         return data;
     }
@@ -60,12 +158,17 @@ class AuthManager {
 
         localStorage.setItem('ecoToken', data.token);
         localStorage.setItem('ecoUser', JSON.stringify(data.user));
+        setCookie('ecoToken', data.token, 30);
+        setCookie('ecoUser', JSON.stringify(data.user), 30);
 
         return data;
     }
 
     logout() {
-        localStorage.clear();
+        localStorage.removeItem('ecoToken');
+        localStorage.removeItem('ecoUser');
+        eraseCookie('ecoToken');
+        eraseCookie('ecoUser');
         window.location.reload();
     }
 }
@@ -149,6 +252,7 @@ class GoaEcoGuard {
         this.initIntersectionObserver();
         this.initNavbarScroll();
         this.initViewOnMapButtons();
+        this.initLeafParticles();
         this.showToast('Welcome to Goa Eco-Guard!', 'success');
     }
 
@@ -218,7 +322,7 @@ class GoaEcoGuard {
     /* ---------- EVENTS ---------- */
     initEventListeners() {
         // Navigation buttons - scroll to sections
-        document.addEventListener('click', (e) => {
+        document.addEventListener('click', async (e) => {
             const section = e.target.closest('[data-section]');
             if (section) {
                 const sectionId = section.getAttribute('data-section');
@@ -240,6 +344,14 @@ class GoaEcoGuard {
                 window.location.href = 'login/signup.html';
                 return;
             }
+
+            // Get current location button
+            if (e.target.id === 'getLocationBtn' || e.target.closest('#getLocationBtn')) {
+                e.preventDefault();
+                this.getCurrentLocation();
+                return;
+            }
+
             if (e.target.id === 'logoutBtn') this.auth.logout();
 
             // Mobile menu toggle
@@ -252,10 +364,15 @@ class GoaEcoGuard {
             }
 
             // Mission modal handlers
-            if (e.target.classList.contains('modal-close') || e.target.classList.contains('close') || e.target.id === 'closeJoin') {
-                document.querySelectorAll('.modal').forEach(m => {
+            if (e.target.classList.contains('modal-close') || e.target.classList.contains('close') || e.target.classList.contains('close-modal') || e.target.id === 'closeJoin') {
+                document.querySelectorAll('.modal.active, .modal.closing').forEach(m => {
                     m.classList.remove('active');
-                    m.classList.add('hidden');
+                    m.classList.add('closing');
+                    setTimeout(() => {
+                        m.classList.remove('closing');
+                        m.classList.add('hidden');
+                        m.style.display = '';  // clear inline style so class-based show works next time
+                    }, 250);
                 });
                 return;
             }
@@ -295,24 +412,24 @@ class GoaEcoGuard {
             if (e.target.classList.contains('filter-btn')) {
                 const filterBtn = e.target;
                 const filter = filterBtn.dataset.filter;
-                
+
                 // Update active state
                 document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
                 filterBtn.classList.add('active');
-                
+
                 console.log('🔍 Filter applied:', filter);
-                
+
                 // Re-render map and cards with new filter
                 this.renderMarkers();
                 this.renderHotspotCards();
-                
+
                 // Fit map bounds to filtered markers
                 if (this.map && this.hotspotsGrouped) {
                     setTimeout(() => {
                         const filteredHotspots = Object.values(this.hotspotsGrouped).filter(h =>
                             filter === 'all' || h.severity === filter
                         );
-                        
+
                         if (filteredHotspots.length > 0) {
                             const bounds = L.latLngBounds();
                             filteredHotspots.forEach(h => {
@@ -324,6 +441,69 @@ class GoaEcoGuard {
                 }
                 return;
             }
+
+            // Image source buttons (gallery / camera)
+            // these are static elements in index.html; when clicked they trigger
+            // the hidden file input or open camera.
+            if (e.target.id === 'galleryBtn' || e.target.closest('#galleryBtn')) {
+                const img = document.getElementById('image');
+                if (img) img.click();
+                return;
+            }
+
+            if (e.target.id === 'cameraBtn' || e.target.closest('#cameraBtn')) {
+                const img = document.getElementById('image');
+                if (!img) return;
+                // check for camera hardware
+                const cameraAvailable = await this.hasCamera();
+                if (!cameraAvailable) {
+                    this.showToast('No camera detected, please choose from gallery', 'error');
+                    img.click();
+                    return;
+                }
+                // attempt advanced capture via getUserMedia
+                if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+                    try {
+                        const file = await this.openCameraCapture();
+                        if (file) {
+                            const dt = new DataTransfer();
+                            dt.items.add(file);
+                            img.files = dt.files;
+                            if (typeof previewImage === 'function') {
+                                previewImage(img);
+                            } else if (window.app && typeof window.app.previewImageFromCamera === 'function') {
+                                window.app.previewImageFromCamera(file);
+                            }
+                        }
+                    } catch (err) {
+                        console.warn('camera capture error', err);
+                        img.click();
+                    }
+                } else {
+                    // fallback to input capture
+                    const cameraInput = document.createElement('input');
+                    cameraInput.type = 'file';
+                    cameraInput.accept = 'image/*';
+                    cameraInput.capture = 'environment';
+                    cameraInput.style.display = 'none';
+                    cameraInput.addEventListener('change', (ev) => {
+                        if (ev.target.files && ev.target.files[0]) {
+                            const dt = new DataTransfer();
+                            dt.items.add(ev.target.files[0]);
+                            img.files = dt.files;
+                            if (typeof previewImage === 'function') {
+                                previewImage(img);
+                            } else if (window.app && typeof window.app.previewImageFromCamera === 'function') {
+                                window.app.previewImageFromCamera(ev.target.files[0]);
+                            }
+                        }
+                    });
+                    document.body.appendChild(cameraInput);
+                    cameraInput.click();
+                    document.body.removeChild(cameraInput);
+                }
+                return;
+            }
         });
 
         // Login and signup forms are now on separate pages
@@ -331,39 +511,148 @@ class GoaEcoGuard {
         document.getElementById('signupForm')?.addEventListener('submit', e => this.handleSignup(e));
         document.getElementById('reportingForm')?.addEventListener('submit', e => this.submitReport(e));
 
-        // 📍 Get current location
-        const getLocationBtn = document.getElementById('getLocationBtn');
-        if (getLocationBtn) {
-            getLocationBtn.addEventListener('click', () => {
-                if (!navigator.geolocation) {
-                    this.showToast('Geolocation not supported', 'error');
-                    return;
-                }
-
-                this.showToast('Fetching location...', 'success');
-
-                navigator.geolocation.getCurrentPosition(
-                    (pos) => {
-                        document.getElementById('latitude').value = pos.coords.latitude;
-                        document.getElementById('longitude').value = pos.coords.longitude;
-
-                        document.getElementById('locationStatus').style.display = 'block';
-                        this.showToast('Location captured ✔', 'success');
-                    },
-                    () => {
-                        this.showToast('Location permission denied', 'error');
-                    },
-                    { enableHighAccuracy: true, timeout: 10000 }
-                );
+        // Forward geocoding for manual location entry
+        const locationInput = document.getElementById('location');
+        if (locationInput) {
+            let debounceTimer;
+            locationInput.addEventListener('input', () => {
+                clearTimeout(debounceTimer);
+                debounceTimer = setTimeout(() => this.searchLocation(locationInput.value), 800);
             });
         }
     }
 
     scrollToSection(sectionId) {
         const section = document.getElementById(sectionId);
-        if (section) {
-            section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        if (!section) return;
+
+        const headerOffset = 80; // fixed header height
+        const targetPosition = section.getBoundingClientRect().top + window.pageYOffset - headerOffset;
+        const startPosition = window.pageYOffset;
+        const distance = targetPosition - startPosition;
+        const duration = 800; // ms
+        let startTime = null;
+
+        // easeInOutCubic for a satisfying scroll feel
+        function ease(t) {
+            return t < 0.5
+                ? 4 * t * t * t
+                : 1 - Math.pow(-2 * t + 2, 3) / 2;
         }
+
+        function animateScroll(currentTime) {
+            if (!startTime) startTime = currentTime;
+            const elapsed = currentTime - startTime;
+            const progress = Math.min(elapsed / duration, 1);
+
+            window.scrollTo(0, startPosition + distance * ease(progress));
+
+            if (progress < 1) {
+                requestAnimationFrame(animateScroll);
+            }
+        }
+
+        requestAnimationFrame(animateScroll);
+    }
+
+    // Determine if the current device has a video input (webcam/camera)
+    async hasCamera() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+            return false;
+        }
+        try {
+            const devices = await navigator.mediaDevices.enumerateDevices();
+            return devices.some(d => d.kind === 'videoinput');
+        } catch (err) {
+            console.warn('Camera detection failed', err);
+            return false;
+        }
+    }
+
+    // open a minimal camera capture overlay using getUserMedia, returning a File
+    openCameraCapture() {
+        return new Promise(async (resolve, reject) => {
+            let stream;
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            } catch (err) {
+                reject(err);
+                return;
+            }
+
+            // create overlay elements
+            const overlay = document.createElement('div');
+            overlay.style.position = 'fixed';
+            overlay.style.top = '0';
+            overlay.style.left = '0';
+            overlay.style.width = '100%';
+            overlay.style.height = '100%';
+            overlay.style.background = 'rgba(0,0,0,0.8)';
+            overlay.style.display = 'flex';
+            overlay.style.alignItems = 'center';
+            overlay.style.justifyContent = 'center';
+            overlay.style.zIndex = '10000';
+
+            const container = document.createElement('div');
+            container.style.position = 'relative';
+            container.style.maxWidth = '90%';
+            container.style.maxHeight = '90%';
+
+            const video = document.createElement('video');
+            video.autoplay = true;
+            video.srcObject = stream;
+            video.style.maxWidth = '100%';
+            video.style.maxHeight = '100%';
+            container.appendChild(video);
+
+            const captureBtn = document.createElement('button');
+            captureBtn.textContent = '📸 Capture';
+            captureBtn.style.position = 'absolute';
+            captureBtn.style.bottom = '10px';
+            captureBtn.style.left = '50%';
+            captureBtn.style.transform = 'translateX(-50%)';
+            captureBtn.className = 'btn btn-primary';
+            container.appendChild(captureBtn);
+
+            const cancelBtn = document.createElement('button');
+            cancelBtn.textContent = '✖';
+            cancelBtn.style.position = 'absolute';
+            cancelBtn.style.top = '10px';
+            cancelBtn.style.right = '10px';
+            cancelBtn.className = 'btn btn-outline';
+            container.appendChild(cancelBtn);
+
+            overlay.appendChild(container);
+            document.body.appendChild(overlay);
+
+            const cleanup = () => {
+                stream.getTracks().forEach(t => t.stop());
+                document.body.removeChild(overlay);
+            };
+
+            captureBtn.addEventListener('click', () => {
+                const canvas = document.createElement('canvas');
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(video, 0, 0);
+                canvas.toBlob(blob => {
+                    if (blob) {
+                        const file = new File([blob], 'capture.jpg', { type: 'image/jpeg' });
+                        cleanup();
+                        resolve(file);
+                    } else {
+                        cleanup();
+                        reject(new Error('Failed to capture image'));
+                    }
+                }, 'image/jpeg');
+            });
+
+            cancelBtn.addEventListener('click', () => {
+                cleanup();
+                resolve(null);
+            });
+        });
     }
 
 
@@ -423,8 +712,7 @@ class GoaEcoGuard {
         this.loadReports();
         this.loadHotspots();
         this.loadMissions();
-        // Leaderboard temporarily disabled
-        // this.loadLeaderboard();
+        this.loadLeaderboard();
         this.loadPolicies();
         this.loadExperiences();
         this.loadEcoSpots();
@@ -498,10 +786,35 @@ class GoaEcoGuard {
             const data = await res.json();
 
             if (!res.ok) {
+                // Check if it's a duplicate report error
+                if (data.type === 'duplicate_report') {
+                    this.showToast('⚠️ Duplicate report: This issue has already been reported at this location.', 'error');
+                    // clear the form but keep location
+                    const imageInput = document.getElementById('image');
+                    if (imageInput) imageInput.value = '';
+                    document.getElementById('imagePreview').innerHTML = '';
+                    document.getElementById('imagePreview').style.display = 'none';
+                    document.getElementById('uploadArea').style.display = 'flex';
+                    document.getElementById('description').value = '';
+                    return; // Stop execution
+                }
+
+                // Check if it's a sensitive content error
+                if (data.type === 'sensitive_content') {
+                    this.showSensitiveContentAlert();
+                    // clear the image input
+                    const imageInput = document.getElementById('image');
+                    if (imageInput) imageInput.value = '';
+                    document.getElementById('imagePreview').innerHTML = '';
+                    document.getElementById('imagePreview').style.display = 'none';
+                    document.getElementById('uploadArea').style.display = 'flex';
+                    return; // Stop execution
+                }
+
                 throw new Error(data.error || 'Failed to submit report');
             }
 
-            this.showToast('Report submitted successfully!', 'success');
+            this.showToast('✅ Report submitted and auto-approved by AI! (Admin can reject)', 'success');
             e.target.reset();
             document.getElementById('locationStatus').style.display = 'none';
             document.getElementById('imagePreview').innerHTML = '';
@@ -514,6 +827,80 @@ class GoaEcoGuard {
         } catch (err) {
             this.showToast(err.message || 'Failed to submit report', 'error');
         }
+    }
+
+    getCurrentLocation() {
+        console.log('🗺️ Getting current location...');
+
+        const locationBtn = document.getElementById('getLocationBtn');
+        const locationStatus = document.getElementById('locationStatus');
+        const locationInput = document.getElementById('location');
+        const latInput = document.getElementById('latitude');
+        const lngInput = document.getElementById('longitude');
+
+        if (!navigator.geolocation) {
+            this.showToast('Geolocation is not supported by your browser', 'error');
+            return;
+        }
+
+        // Update button text to show loading
+        const originalText = locationBtn.innerHTML;
+        locationBtn.innerHTML = '🔄 Getting location...';
+        locationBtn.disabled = true;
+
+        navigator.geolocation.getCurrentPosition(
+            async (position) => {
+                const lat = position.coords.latitude;
+                const lng = position.coords.longitude;
+
+                console.log('📍 Location captured:', { lat, lng });
+
+                // Populate hidden fields
+                latInput.value = lat;
+                lngInput.value = lng;
+
+                // Sync with map
+                this.updateLocalReportMarker(lat, lng);
+
+                // Try to get location name using reverse geocoding
+                await this.reverseGeocode(lat, lng);
+
+                // Show success message
+                locationStatus.style.display = 'block';
+                this.showToast('Location captured successfully!', 'success');
+
+                // Reset button
+                locationBtn.innerHTML = originalText;
+                locationBtn.disabled = false;
+            },
+            (error) => {
+                console.error('❌ Geolocation error:', error);
+                let errorMessage = 'Could not get your location';
+
+                switch (error.code) {
+                    case error.PERMISSION_DENIED:
+                        errorMessage = 'Location permission denied. Please enable location access.';
+                        break;
+                    case error.POSITION_UNAVAILABLE:
+                        errorMessage = 'Location information unavailable';
+                        break;
+                    case error.TIMEOUT:
+                        errorMessage = 'Location request timed out';
+                        break;
+                }
+
+                this.showToast(errorMessage, 'error');
+
+                // Reset button
+                locationBtn.innerHTML = originalText;
+                locationBtn.disabled = false;
+            },
+            {
+                enableHighAccuracy: true,
+                timeout: 10000,
+                maximumAge: 0
+            }
+        );
     }
 
     renderReports() {
@@ -560,7 +947,7 @@ class GoaEcoGuard {
                 return `
                 <div class="report-card ${statusClass}">
                     <div class="report-header">
-                        ${r.image ? `<img src="${API_BASE}/uploads/${encodeURIComponent(r.image)}" alt="${escapeHtml(r.location || 'Report')}" class="report-image">` : `<div class="report-image-placeholder">📷</div>`}
+                        ${r.image ? `<img src="${resolveImageUrl(r.image)}" alt="${escapeHtml(r.location || 'Report')}" class="report-image">` : `<div class="report-image-placeholder">📷</div>`}
                         <div class="report-info">
                             <div class="report-location">${escapeHtml(r.location || 'Location not specified')}</div>
                             <div class="report-description">${escapeHtml(r.description || 'No description')}</div>
@@ -603,12 +990,12 @@ class GoaEcoGuard {
 
             // Group by location to get report counts
             this.hotspotsGrouped = this.groupHotspotsByLocation(this.allHotspots);
-            
+
             console.log('🗺️ Hotspots ready:', this.allHotspots.length, 'reports,', Object.keys(this.hotspotsGrouped).length, 'unique locations');
 
             // Initialize map with real data
             this.initMap();
-            
+
             // Render hotspot cards
             this.renderHotspotCards();
 
@@ -696,6 +1083,20 @@ class GoaEcoGuard {
             low: L.layerGroup()
         };
 
+        // User's current selection marker (for pins)
+        this.userMarker = null;
+
+        // Add map click listener
+        this.map.on('click', (e) => {
+            const { lat, lng } = e.latlng;
+            this.updateLocalReportMarker(lat, lng);
+            this.reverseGeocode(lat, lng);
+            
+            // Show toast to confirm capture
+            this.showToast('Location selected on map ✔', 'success');
+            document.getElementById('locationStatus').style.display = 'block';
+        });
+
         // Store markers by location key for easy access
         this.markersByLocation = {};
 
@@ -723,7 +1124,7 @@ class GoaEcoGuard {
         console.log('🔄 Refreshing map data...');
         try {
             const reports = await this.fetchJSON('/api/reports');
-            
+
             this.allHotspots = (reports || []).map(r => ({
                 id: r.id,
                 location: r.location || 'Unknown Location',
@@ -737,13 +1138,13 @@ class GoaEcoGuard {
             })).filter(h => !isNaN(h.lat) && !isNaN(h.lng));
 
             this.hotspotsGrouped = this.groupHotspotsByLocation(this.allHotspots);
-            
+
             // Preserve current filter
             const activeFilter = document.querySelector('.filter-btn.active')?.dataset.filter || 'all';
-            
+
             this.renderMarkers();
             this.renderHotspotCards();
-            
+
             console.log('✅ Map refreshed with', this.allHotspots.length, 'reports');
         } catch (err) {
             console.error('Error refreshing map:', err);
@@ -828,7 +1229,7 @@ class GoaEcoGuard {
             `;
 
             marker.bindPopup(popupContent);
-            
+
             this.markerLayers.all.addLayer(marker);
             if (this.markerLayers[hotspot.severity]) {
                 this.markerLayers[hotspot.severity].addLayer(marker);
@@ -846,7 +1247,7 @@ class GoaEcoGuard {
         const activeFilter = document.querySelector('.filter-btn.active')?.dataset.filter || 'all';
 
         // Filter hotspots based on active filter
-        const filteredHotspots = Object.values(this.hotspotsGrouped).filter(h => 
+        const filteredHotspots = Object.values(this.hotspotsGrouped).filter(h =>
             activeFilter === 'all' || h.severity === activeFilter
         );
 
@@ -857,8 +1258,8 @@ class GoaEcoGuard {
             ? filteredHotspots.map(h => {
                 const latLng = `${h.lat},${h.lng}`;
                 const lastReport = h.reports[0];
-                const lastUpdated = new Date(lastReport?.created_at).toLocaleDateString('en-US', { 
-                    month: 'short', 
+                const lastUpdated = new Date(lastReport?.created_at).toLocaleDateString('en-US', {
+                    month: 'short',
                     day: 'numeric',
                     year: 'numeric'
                 });
@@ -892,7 +1293,7 @@ class GoaEcoGuard {
                             ` : ''}
                         </div>
                         <button class="btn btn-primary view-on-map-btn" data-latlng="${latLng}">
-                            🗺️ View on Map
+                            View on Map
                         </button>
                     </div>
                 `;
@@ -904,7 +1305,7 @@ class GoaEcoGuard {
 
     viewOnMap(latLng) {
         const [lat, lng] = latLng.split(',').map(Number);
-        
+
         if (!this.map) return;
 
         // Smooth scroll to map
@@ -926,6 +1327,84 @@ class GoaEcoGuard {
         }, 500);
     }
 
+    /* ---------- HELPER METHODS ---------- */
+    async reverseGeocode(lat, lng) {
+        const locationInput = document.getElementById('location');
+        try {
+            const response = await fetch(
+                `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`
+            );
+            const data = await response.json();
+            
+            // Build a more specific address string: House/Road, Suburb/Neighbourhood, City
+            const addr = data.address || {};
+            const parts = [];
+            
+            if (addr.house_number) parts.push(addr.house_number);
+            if (addr.road) parts.push(addr.road);
+            if (addr.neighbourhood || addr.suburb) parts.push(addr.neighbourhood || addr.suburb);
+            if (addr.city || addr.town || addr.village) parts.push(addr.city || addr.town || addr.village);
+            
+            const locationName = parts.length > 0 
+                ? parts.join(', ') 
+                : (data.display_name || `${lat.toFixed(4)}, ${lng.toFixed(4)}`);
+
+            if (locationInput) locationInput.value = locationName;
+            return locationName;
+        } catch (error) {
+            console.warn('Could not get location name:', error);
+            if (locationInput) locationInput.value = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+            return null;
+        }
+    }
+
+    async searchLocation(query) {
+        if (!query || query.length < 3) return;
+        try {
+            const response = await fetch(
+                `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query + ', Goa')}&limit=1`
+            );
+            const data = await response.json();
+            if (data && data.length > 0) {
+                const { lat, lon } = data[0];
+                const latitude = parseFloat(lat);
+                const longitude = parseFloat(lon);
+                
+                document.getElementById('latitude').value = latitude;
+                document.getElementById('longitude').value = longitude;
+                
+                this.updateLocalReportMarker(latitude, longitude);
+            }
+        } catch (error) {
+            console.error('Search error:', error);
+        }
+    }
+
+    updateLocalReportMarker(lat, lng) {
+        if (!this.map) return;
+        
+        // Update hidden fields
+        document.getElementById('latitude').value = lat;
+        document.getElementById('longitude').value = lng;
+
+        if (this.userMarker) {
+            this.userMarker.setLatLng([lat, lng]);
+        } else {
+            this.userMarker = L.marker([lat, lng], {
+                icon: L.divIcon({
+                    html: `<div style="background:#22c55e;width:24px;height:24px;border-radius:50%;border:3px solid white;box-shadow:0 0 10px rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;">📍</div>`,
+                    className: '',
+                    iconSize: [24, 24],
+                    iconAnchor: [12, 12]
+                }),
+                zIndexOffset: 1000
+            }).addTo(this.map);
+        }
+
+        // Center map on selection with high precision zoom
+        this.map.setView([lat, lng], 18, { animate: true });
+    }
+
     escapeHtml(text) {
         if (!text) return '';
         const div = document.createElement('div');
@@ -944,23 +1423,55 @@ class GoaEcoGuard {
         const container = document.getElementById('missionsGrid');
         if (!container || !this.missions) return;
 
+        const TRUNCATE = 120;
+
         container.innerHTML = this.missions.length
-            ? this.missions.map(m => `
-                <div class="mission-card">
-                    ${m.image ? `<img src="${API_BASE}/uploads/${m.image}" alt="${m.title}" class="mission-image">` : ''}
-                    <div class="mission-content">
-                        <h3>${m.title}</h3>
-                        <p>${m.description}</p>
-                        <div class="mission-meta">
-                            <span>📅 ${new Date(m.date).toLocaleDateString()}</span>
-                            <span>📍 ${m.location}</span>
+            ? this.missions.map(m => {
+                const joined = getJoinedMissions().includes(String(m.id));
+
+                const joinBtn = joined
+                    ? `<button class="btn btn-joined" disabled>&#10003; Already Joined</button>`
+                    : `<button class="btn btn-primary join-mission-btn" data-mission-id="${m.id}">Join Mission</button>`;
+
+                const desc = m.description || '';
+                const long = desc.length > TRUNCATE;
+                const short = long ? desc.slice(0, TRUNCATE).trimEnd() + '…' : desc;
+
+                const descBlock = long
+                    ? `<div class="mission-desc">
+                         <p class="mission-desc-short">${short}</p>
+                         <p class="mission-desc-full" style="display:none;margin:0">${desc}</p>
+                         <button class="read-more-btn" onclick="(function(b){
+                           var w=b.closest('.mission-desc');
+                           var s=w.querySelector('.mission-desc-short');
+                           var f=w.querySelector('.mission-desc-full');
+                           var o=f.style.display!='none';
+                           s.style.display=o?'':'none';
+                           f.style.display=o?'none':'';
+                           b.textContent=o?'Read more':'Show less';
+                         })(this)">Read more</button>
+                       </div>`
+                    : `<div class="mission-desc"><p class="mission-desc-short">${desc}</p></div>`;
+
+                return `
+                    <div class="mission-card">
+                        <div class="mission-img-wrap">
+                            ${m.image
+                                ? `<img src="${resolveImageUrl(m.image)}" alt="${m.title}" class="mission-image">`
+                                : `<div class="mission-img-placeholder">🌿</div>`}
                         </div>
-                        <button class="btn btn-primary join-mission-btn" data-mission-id="${m.id}">
-                            Join Mission
-                        </button>
-                    </div>
-                </div>
-            `).join('')
+                        <div class="mission-content">
+                            <h3 class="mission-title">${m.title}</h3>
+                            ${descBlock}
+                            <div class="mission-meta">
+                                <span>&#128197; ${new Date(m.date).toLocaleDateString()}</span>
+                                <span>&#128205; ${m.location}</span>
+                                <span>&#128101; ${m.participant_count || 0} Joined</span>
+                            </div>
+                            <div class="mission-action">${joinBtn}</div>
+                        </div>
+                    </div>`;
+            }).join('')
             : `<p class="text-center">No missions available yet.</p>`;
     }
 
@@ -975,7 +1486,7 @@ class GoaEcoGuard {
         document.getElementById('modalLocation').textContent = mission.location;
         document.getElementById('modalDifficulty').textContent = mission.difficulty || 'Moderate';
         if (mission.image) {
-            document.getElementById('modalImage').src = `${API_BASE}/uploads/${mission.image}`;
+            document.getElementById('modalImage').src = resolveImageUrl(mission.image);
         }
         document.getElementById('confirmJoinBtn').dataset.missionId = missionId;
         document.getElementById('missionModal').classList.add('active');
@@ -1048,7 +1559,10 @@ class GoaEcoGuard {
             const data = await res.json();
             console.log('Join mission success:', data);
 
-            this.showToast('Successfully joined mission!', 'success');
+            // Persist joined state in localStorage (survives logout & browser close)
+            markMissionJoined(missionId);
+
+            this.showToast('Successfully joined the mission! A confirmation email has been sent to you. 🌿', 'success');
 
             // Close modal
             const joinModal = document.getElementById('joinModal');
@@ -1060,7 +1574,7 @@ class GoaEcoGuard {
             // Reset form
             if (form) form.reset();
 
-            // Refresh missions if needed
+            // Re-render missions so the button flips to "Already Joined"
             if (typeof this.loadMissions === 'function') {
                 this.loadMissions();
             }
@@ -1116,61 +1630,28 @@ class GoaEcoGuard {
         this.animateCounter('totalMissions', this.leaderboard.totalMissions || 0);
         this.animateCounter('totalTrees', this.leaderboard.totalTrees || 0);
 
-        // Render top 3 podium with avatars and medals
+        // Render top 3 podium
         const podiumGrid = document.getElementById('podiumGrid');
-        if (podiumGrid && Array.isArray(this.leaderboard.top3)) {
-            podiumGrid.innerHTML = this.leaderboard.top3.map((user, idx) => {
-                const medal = idx === 0 ? '★' : idx === 1 ? '☆' : '✦';
-                const cls = idx === 0 ? 'gold' : idx === 1 ? 'silver' : 'bronze';
-                const initials = (user.name || 'U').split(' ').map(s=>s[0]).slice(0,2).join('').toUpperCase();
-                return `
-                <div class="podium-item ${cls}">
-                    <div class="podium-avatar">${user.avatar || '' || initials}</div>
-                    <div class="podium-meta">
-                        <div class="podium-name">${user.name}</div>
-                        <div class="podium-score">${user.score} pts</div>
-                    </div>
-                    <div class="podium-medal">${medal}</div>
-                </div>`;
-            }).join('');
+        if (podiumGrid && this.leaderboard.top3) {
+            podiumGrid.innerHTML = this.leaderboard.top3.map((user, idx) => `
+                <div class="podium-item ${idx === 0 ? 'gold' : idx === 1 ? 'silver' : 'bronze'}">
+                    <div class="podium-rank">${idx + 1}</div>
+                    <div class="podium-name">${user.name}</div>
+                    <div class="podium-score">${user.score} pts</div>
+                </div>
+            `).join('');
         }
 
-        // Render full leaderboard with avatars, progress bars and subtle animations
+        // Render full leaderboard
         const leaderboardList = document.getElementById('leaderboardList');
-        if (leaderboardList && Array.isArray(this.leaderboard.list)) {
-            // Determine max score for progress bars
-            const allScores = [ ...(this.leaderboard.top3 || []).map(u=>u.score || 0), ...(this.leaderboard.list || []).map(u=>u.score || 0) ];
-            const maxScore = Math.max(...allScores, 1);
-
-            leaderboardList.innerHTML = this.leaderboard.list.map((user, idx) => {
-                const rank = idx + 4; // top3 shown separately
-                const initials = (user.name || 'U').split(' ').map(s=>s[0]).slice(0,2).join('').toUpperCase();
-                const pct = Math.round(((user.score||0) / maxScore) * 100);
-                const avatarHtml = user.avatar ? `<img class="leaderboard-avatar" src="${user.avatar}" alt="${user.name}">` : `<div class="avatar-initials">${initials}</div>`;
-
-                return `
+        if (leaderboardList && this.leaderboard.list) {
+            leaderboardList.innerHTML = this.leaderboard.list.map((user, idx) => `
                 <div class="leaderboard-item">
-                    <div class="leaderboard-rank">${rank}</div>
-                    ${avatarHtml}
-                    <div class="leaderboard-info">
-                        <div class="leaderboard-name">${user.name}</div>
-                        <div class="leaderboard-location">${user.location || ''}</div>
-                        <div class="progress-wrap">
-                            <div class="progress-bar" style="width:${pct}%"></div>
-                        </div>
-                    </div>
-                    <div class="leaderboard-points">${user.score} pts</div>
+                    <span class="rank">${idx + 4}</span>
+                    <span class="name">${user.name}</span>
+                    <span class="score">${user.score} pts</span>
                 </div>
-                `;
-            }).join('');
-
-            // Add staggered fade-in animation
-            requestAnimationFrame(()=>{
-                leaderboardList.querySelectorAll('.leaderboard-item').forEach((el, i)=>{
-                    el.style.animationDelay = `${i * 60}ms`;
-                    el.classList.add('fade-in-up');
-                });
-            });
+            `).join('');
         }
     }
 
@@ -1231,16 +1712,35 @@ class GoaEcoGuard {
                 </div>
             `).join('');
         } else if (policiesList) {
-            // Show report-based policy info if no policies
-            policiesList.innerHTML = `
-                <div class="policy-card">
-                    <div class="policy-status in_progress">
-                        <span>LIVE TRACKING</span>
-                    </div>
-                    <h3>Environmental Reports Tracker</h3>
-                    <p>Real-time tracking of environmental issues reported by citizens. Reports are reviewed and addressed by authorities.</p>
-                </div>
-            `;
+        //     // Show real report statistics when no policies exist
+        //     const stats = this.reportStats || { total: 0, pending: 0, approved: 0, rejected: 0 };
+        //     policiesList.innerHTML = `
+        //         <div class="policy-card">
+        //             <div class="policy-status in_progress">
+        //                 <span>LIVE TRACKING</span>
+        //             </div>
+        //             <h3>Environmental Reports Tracker</h3>
+        //             <p>Real-time tracking of environmental issues reported by citizens. Reports are reviewed and addressed by authorities.</p>
+        //             <div class="report-stats-grid">
+        //                 <div class="report-stat-item">
+        //                     <div class="report-stat-number">${stats.total}</div>
+        //                     <div class="report-stat-label">Total Reports</div>
+        //                 </div>
+        //                 <div class="report-stat-item report-stat-pending">
+        //                     <div class="report-stat-number">${stats.pending}</div>
+        //                     <div class="report-stat-label">Pending Review</div>
+        //                 </div>
+        //                 <div class="report-stat-item report-stat-approved">
+        //                     <div class="report-stat-number">${stats.approved}</div>
+        //                     <div class="report-stat-label">Approved</div>
+        //                 </div>
+        //                 <div class="report-stat-item report-stat-rejected">
+        //                     <div class="report-stat-number">${stats.rejected}</div>
+        //                     <div class="report-stat-label">Rejected</div>
+        //                 </div>
+        //             </div>
+        //         </div>
+        //     `;
         }
     }
 
@@ -1257,7 +1757,7 @@ class GoaEcoGuard {
         container.innerHTML = this.experiences.length
             ? this.experiences.map(e => `
                 <div class="experience-card">
-                    ${e.image ? `<img src="${API_BASE}/uploads/${e.image}" alt="${e.name}">` : ''}
+                    ${e.image ? `<img src="${resolveImageUrl(e.image)}" alt="${e.name}">` : ''}
                     <div class="experience-content">
                         <span class="experience-category">${e.category}</span>
                         <h3>${e.name}</h3>
@@ -1266,7 +1766,7 @@ class GoaEcoGuard {
                     </div>
                 </div>
             `).join('')
-            : `<p class="text-center">No experiences available yet.</p>`;
+            : '';
     }
 
     /* ---------- ECO SPOTS ---------- */
@@ -1279,43 +1779,76 @@ class GoaEcoGuard {
         const container = document.getElementById('experiencesGrid');
         if (!container) return;
 
-        // Combine experiences and eco spots
+        const TRUNCATE = 120;
+
+        function descBlock(text) {
+            const desc = text || '';
+            const long = desc.length > TRUNCATE;
+            const short = long ? desc.slice(0, TRUNCATE).trimEnd() + '…' : desc;
+            if (!long) return `<div class="eco-spot-desc-wrap"><p class="eco-spot-desc">${desc}</p></div>`;
+            return `<div class="eco-spot-desc-wrap">
+                        <p class="eco-spot-desc eco-spot-desc-short">${short}</p>
+                        <p class="eco-spot-desc eco-spot-desc-full" style="display:none;margin:0">${desc}</p>
+                        <button class="read-more-btn" onclick="(function(b){
+                          var w=b.closest('.eco-spot-desc-wrap');
+                          var s=w.querySelector('.eco-spot-desc-short');
+                          var f=w.querySelector('.eco-spot-desc-full');
+                          var o=f.style.display!='none';
+                          s.style.display=o?'':'none';
+                          f.style.display=o?'none':'';
+                          b.textContent=o?'Read more':'Show less';
+                        })(this)">Read more</button>
+                    </div>`;
+        }
+
         let html = '';
 
+        // Experience cards
         if (this.experiences && this.experiences.length > 0) {
             html += this.experiences.map(e => `
-                <div class="experience-card">
-                    ${e.image ? `<img src="${API_BASE}/uploads/${e.image}" alt="${e.name}">` : ''}
-                    <div class="experience-content">
-                        <span class="experience-category">${e.category}</span>
-                        <h3>${e.name}</h3>
-                        <p>${e.description}</p>
-                        ${e.location ? `<div class="experience-location">📍 ${e.location}</div>` : ''}
+                <div class="eco-spot-card">
+                    <div class="eco-spot-img-wrap">
+                        ${e.image
+                            ? `<img src="${resolveImageUrl(e.image)}" alt="${e.name}" class="eco-spot-img">`
+                            : `<div class="eco-spot-img-placeholder">🌴</div>`}
+                    </div>
+                    <div class="eco-spot-body">
+                        ${e.category ? `<span class="eco-spot-category">${e.category}</span>` : ''}
+                        <h3 class="eco-spot-name">${e.name}</h3>
+                        ${descBlock(e.description)}
+                        ${e.location ? `<div class="eco-spot-location">📍 ${e.location}</div>` : ''}
                     </div>
                 </div>
             `).join('');
         }
 
+        // Eco spot cards
         if (this.ecoSpots && this.ecoSpots.length > 0) {
             html += this.ecoSpots.map(spot => `
                 <div class="eco-spot-card">
-                    ${spot.image ? `<img src="${API_BASE}/uploads/${spot.image}" alt="${spot.name}">` : ''}
-                    <div class="eco-spot-content">
+                    <div class="eco-spot-img-wrap">
+                        ${spot.image
+                            ? `<img src="${resolveImageUrl(spot.image)}" alt="${spot.name}" class="eco-spot-img">`
+                            : `<div class="eco-spot-img-placeholder">🌿</div>`}
+                    </div>
+                    <div class="eco-spot-body">
                         <div class="eco-spot-header">
-                            <h3>${spot.name}</h3>
+                            <h3 class="eco-spot-name">${spot.name}</h3>
                             <div class="eco-spot-rating">⭐ ${spot.rating}</div>
                         </div>
                         <div class="eco-spot-location">📍 ${spot.location}</div>
-                        <p class="eco-spot-desc">${spot.description}</p>
+                        ${descBlock(spot.description)}
                         ${spot.features ? `
                             <div class="eco-spot-features">
                                 ${spot.features.split(',').map(f => `<span class="feature-tag">${f.trim()}</span>`).join('')}
                             </div>
                         ` : ''}
                         ${spot.price ? `<div class="eco-spot-price">${spot.price}</div>` : ''}
-                        <button class="btn btn-primary know-more-btn" data-spot-id="${spot.id}">
-                            Know More
-                        </button>
+                        <div class="eco-spot-action">
+                            <button class="btn btn-primary know-more-btn" data-spot-id="${spot.id}">
+                                Know More
+                            </button>
+                        </div>
                     </div>
                 </div>
             `).join('');
@@ -1357,7 +1890,7 @@ class GoaEcoGuard {
 
             const content = document.getElementById('ecoSpotDetailContent');
             content.innerHTML = `
-                ${spot.image ? `<img src="${API_BASE}/uploads/${spot.image}" alt="${spot.name}" class="eco-spot-modal-image">` : ''}
+                ${spot.image ? `<img src="${resolveImageUrl(spot.image)}" alt="${spot.name}" class="eco-spot-modal-image">` : ''}
                 <div class="eco-spot-modal-body">
                     <div class="eco-spot-modal-header">
                         <h2>${spot.name}</h2>
@@ -1396,10 +1929,114 @@ class GoaEcoGuard {
                 </div>
             `;
 
-            modal.style.display = 'flex';
+            modal.style.display = '';
+            modal.classList.remove('hidden', 'closing');
+            modal.classList.add('active');
         } catch (err) {
             this.showToast('Failed to load eco spot details', 'error');
         }
+    }
+
+    /* ---------- SENSITIVE CONTENT ALERT ---------- */
+    showSensitiveContentAlert() {
+        console.log('⚠️ showSensitiveContentAlert TRIGGERED');
+
+        // Remove existing if any (to ensure fresh render with correct styles)
+        const existing = document.getElementById('sensitiveContentModal');
+        if (existing) existing.remove();
+
+        const modal = document.createElement('div');
+        modal.id = 'sensitiveContentModal';
+
+        // Critical: Strict inline styles to force visibility overlay
+        modal.className = 'modal active';
+        Object.assign(modal.style, {
+            position: 'fixed',
+            zIndex: '999999',
+            left: '0',
+            top: '0',
+            width: '100vw',
+            height: '100vh',
+            backgroundColor: 'rgba(0,0,0,0.85)',
+            alignItems: 'center',
+            justifyContent: 'center',
+            backdropFilter: 'blur(5px)'
+        });
+
+        modal.innerHTML = `
+            <div style="
+                background: white;
+                padding: 2rem;
+                border-radius: 12px;
+                max-width: 400px;
+                width: 90%;
+                text-align: center;
+                box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+                border: 2px solid #ef4444;
+                animation: slideDown 0.3s ease-out;
+            ">
+                <div style="
+                    font-size: 3rem; 
+                    margin-bottom: 1rem;
+                    animation: pulse 2s infinite;
+                ">⚠️</div>
+                
+                <h2 style="
+                    color: #dc2626; 
+                    margin-bottom: 0.5rem; 
+                    font-size: 1.5rem; 
+                    font-weight: 800;
+                    font-family: inherit;
+                ">Content Warning</h2>
+                
+                <p style="
+                    color: #4b5563; 
+                    margin-bottom: 1.5rem; 
+                    line-height: 1.6;
+                    font-size: 1rem;
+                ">
+                    Our AI has detected potential <strong>sensitive content</strong> (people, faces, or restricted items).
+                    <br><br>
+                    Please upload only environmental pictures (garbage, nature, pollution) to protect privacy.
+                </p>
+                
+                <button id="closeSensitiveModalBtn" style="
+                    background-color: #dc2626;
+                    color: white;
+                    border: none;
+                    padding: 0.75rem 1.5rem;
+                    border-radius: 8px;
+                    font-weight: 600;
+                    font-size: 1rem;
+                    cursor: pointer;
+                    width: 100%;
+                    transition: all 0.2s;
+                    box-shadow: 0 4px 6px -1px rgba(220, 38, 38, 0.4);
+                ">
+                    Start Over
+                </button>
+            </div>
+        `;
+
+        document.body.appendChild(modal);
+
+        // Focus logic
+        const btn = document.getElementById('closeSensitiveModalBtn');
+        if (btn) {
+            btn.onclick = () => {
+                modal.classList.add('closing');
+                setTimeout(() => modal.remove(), 250);
+            };
+            btn.focus();
+        }
+
+        // Close on outside click
+        modal.onclick = (e) => {
+            if (e.target === modal) {
+                modal.classList.add('closing');
+                setTimeout(() => modal.remove(), 250);
+            }
+        };
     }
 
     /* ---------- MAP FILTERING ---------- */
@@ -1420,15 +2057,55 @@ class GoaEcoGuard {
             this.markerLayers[filter].addTo(this.map);
         }
 
-        console.log(`✅ Map filtered to: ${filter}`);
+        console.log(`✅ Map filtered to: ${filter} `);
     }
 
     /* ---------- UI HELPERS ---------- */
     showToast(msg, type) {
         const toast = document.getElementById('toast');
+        if (!toast) {
+            console.warn('Toast element not found in DOM');
+            return;
+        }
         toast.className = `toast ${type} active`;
-        toast.querySelector('#toastMessage').textContent = msg;
-        setTimeout(() => toast.classList.remove('active'), 6000);
+        const msgEl = toast.querySelector('#toastMessage');
+        if (msgEl) msgEl.textContent = msg;
+        setTimeout(() => toast.classList.remove('active'), 8000);
+    }
+
+    // Preview/remove helpers moved here from inline HTML
+    previewImage(input) {
+        const preview = document.getElementById('imagePreview');
+        const uploadArea = document.getElementById('uploadArea');
+        if (input.files && input.files[0]) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                preview.innerHTML = `
+                    <img src="${e.target.result}" alt="Preview">
+                    <button type="button" onclick="removeImage()" class="remove-btn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18"/>
+                            <line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                    </button>
+                `;
+                uploadArea.style.display = 'none';
+                preview.style.display = 'block';
+            }
+            reader.readAsDataURL(input.files[0]);
+        }
+    }
+
+    removeImage() {
+        const input = document.getElementById('image');
+        const preview = document.getElementById('imagePreview');
+        const uploadArea = document.getElementById('uploadArea');
+        if (input) input.value = '';
+        if (preview) {
+            preview.innerHTML = '';
+            preview.style.display = 'none';
+        }
+        if (uploadArea) uploadArea.style.display = 'block';
     }
 
     showLoginModal() {
@@ -1454,31 +2131,38 @@ class GoaEcoGuard {
     }
 
     closeModal() {
-        document.querySelectorAll('.modal').forEach(m => m.style.display = 'none');
+        document.querySelectorAll('.modal').forEach(m => {
+            m.classList.remove('active');
+            m.classList.add('closing');
+            setTimeout(() => {
+                m.classList.remove('closing');
+                m.style.display = 'none';
+            }, 250);
+        });
     }
 
     initIntersectionObserver() {
         // Get all sections
         const sections = document.querySelectorAll('section[id]');
-        
+
         // Create Intersection Observer options
         const observerOptions = {
             root: null,
             rootMargin: '0px 0px -50% 0px',  // Trigger when section is 50% visible
             threshold: 0
         };
-        
+
         // Callback function when sections enter/leave viewport
         const observerCallback = (entries) => {
             entries.forEach((entry) => {
                 if (entry.isIntersecting) {
                     const sectionId = entry.target.id;
-                    
+
                     // Remove active class from all nav links
                     document.querySelectorAll('.nav-link').forEach(link => {
                         link.classList.remove('active');
                     });
-                    
+
                     // Add active class to matching nav link
                     const activeLink = document.querySelector(`.nav-link[data-section="${sectionId}"]`);
                     if (activeLink) {
@@ -1488,9 +2172,70 @@ class GoaEcoGuard {
             });
         };
         
+
         // Create observer and observe all sections
         const observer = new IntersectionObserver(observerCallback, observerOptions);
         sections.forEach(section => observer.observe(section));
+    }
+
+    
+
+    // Add this helper method to GoaEcoGuard class
+    previewImageFromCamera(file) {
+        const preview = document.getElementById('imagePreview');
+        const uploadArea = document.getElementById('uploadArea');
+        
+        if (file) {
+            const reader = new FileReader();
+            
+            reader.onload = (e) => {
+                preview.innerHTML = `
+                    <img src="${e.target.result}" alt="Preview">
+                    <button type="button" onclick="removeImage()" class="remove-btn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18"/>
+                            <line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                    </button>
+                `;
+                uploadArea.style.display = 'none';
+                preview.style.display = 'block';
+            }
+            
+            reader.readAsDataURL(file);
+        }
+    }
+//leaf count 
+    initLeafParticles() {
+        const lc = document.getElementById('leafContainer');
+        if (!lc) return;
+
+        // Clean existing
+        lc.innerHTML = '';
+
+        // Create particles
+        const count = 10;
+        for (let i = 0; i < count; i++) {
+            const l = document.createElement('div');
+            l.className = 'leaf-particle';
+            
+            // Randomize properties
+            const left = Math.random() * 100; // full width
+            const duration = 10 + Math.random() * 16;
+            const delay = Math.random() * 16;
+            const opacity = 0.12 + Math.random() * 0.25;
+            const scale = 0.6 + Math.random() * 0.9;
+            
+            l.style.cssText = `
+                left: ${left}%;
+                animation-duration: ${duration}s;
+                animation-delay: -${delay}s; /* negative delay to start mid-animation */
+                opacity: ${opacity};
+                transform: scale(${scale});
+            `;
+            
+            lc.appendChild(l);
+        }
     }
 }
 
@@ -1501,5 +2246,10 @@ let app;
 document.addEventListener('DOMContentLoaded', () => {
     app = new GoaEcoGuard();
     window.app = app; // Make app globally accessible for onclick handlers
+
+    // expose helpers for inline attributes
+    window.previewImage = (input) => app.previewImage(input);
+    window.removeImage = () => app.removeImage();
+
     console.log('🌱 Goa Eco-Guard ready (fully dynamic)');
 });
