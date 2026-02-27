@@ -1,5 +1,14 @@
-// Production API endpoint (Render)
-const API_BASE = 'https://eco-guard-backend.onrender.com';
+const API_BASE =
+    window.__API_BASE__ ||
+    document.querySelector('meta[name="api-base"]')?.content ||
+    ((location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+        ? 'http://localhost:3000'
+        : location.origin);
+
+function eraseCookie(name) {
+    const secure = location.protocol === 'https:' ? '; secure' : '';
+    document.cookie = encodeURIComponent(name) + '=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/; samesite=lax' + secure;
+}
 
 const token = localStorage.getItem('ecoToken');
 const user = JSON.parse(localStorage.getItem('ecoUser') || '{}');
@@ -23,12 +32,17 @@ document.addEventListener('DOMContentLoaded', () => {
     loadUsers();
     loadMissions();
     loadEcoSpots();
+    loadStories();
+    loadSightings();
 });
 
 function initEventListeners() {
     // Logout
     document.getElementById('logoutBtn').onclick = () => {
-        localStorage.clear();
+        localStorage.removeItem('ecoToken');
+        localStorage.removeItem('ecoUser');
+        eraseCookie('ecoToken');
+        eraseCookie('ecoUser');
         window.location.href = '../index.html';
     };
 
@@ -195,9 +209,9 @@ async function updateReportStatus(id, status) {
             body: JSON.stringify(bodyData)
         });
         if (res.ok) {
-            const statusMsg = status === 'approved' ? 'Report approved and featured!' :
-                status === 'rejected' ? 'Report rejected and soft deleted' :
-                    'Status updated successfully';
+            const statusMsg = status === 'approved' ? '✅ Report re-approved!' :
+                status === 'rejected' ? '❌ Report rejected by admin' :
+                    '✅ Status updated successfully';
             showToast(statusMsg, 'success');
             loadReports();
         }
@@ -608,6 +622,120 @@ async function deleteEcoSpot(id) {
         }
     } catch (err) {
         showToast('Failed to delete eco spot', 'error');
+    }
+}
+
+// ===============================
+// STORIES MANAGEMENT (NewFeatures)
+// ===============================
+async function loadStories() {
+    try {
+        const res = await fetch(`${API_BASE}/api/admin/stories`, { headers: authHeader });
+        if (!res.ok) return;
+        const stories = await res.json();
+
+        const tbody = document.getElementById('storiesTable');
+        if (!tbody) return;
+
+        tbody.innerHTML = stories.length
+            ? stories.map(s => {
+                const userName = s.users?.name || 'N/A';
+                const userEmail = s.users?.email || '';
+                const created = s.created_at ? new Date(s.created_at).toLocaleDateString() : 'N/A';
+                const beforeImg = s.before_image ? `<img src="${s.before_image}" class="thumb-img">` : 'None';
+                const afterImg = s.after_image ? `<img src="${s.after_image}" class="thumb-img">` : 'None';
+
+                return `
+                <tr>
+                    <td>${s.id}</td>
+                    <td>${s.title || ''}</td>
+                    <td>${userName}<br><small>${userEmail}</small></td>
+                    <td>❤️ ${s.likes_count || 0}</td>
+                    <td>${beforeImg}</td>
+                    <td>${afterImg}</td>
+                    <td>${created}</td>
+                    <td>
+                        <button class="btn btn-danger btn-sm" onclick="deleteStory('${s.id}')">Delete</button>
+                    </td>
+                </tr>`;
+            }).join('')
+            : '<tr><td colspan="8" class="text-center">No stories found</td></tr>';
+    } catch (err) {
+        console.error('Error loading stories:', err);
+    }
+}
+
+async function deleteStory(id) {
+    if (!confirm('Are you sure you want to delete this story?')) return;
+    try {
+        const res = await fetch(`${API_BASE}/api/admin/stories/${id}`, {
+            method: 'DELETE',
+            headers: authHeader
+        });
+        if (res.ok) {
+            showToast('Story deleted', 'success');
+            loadStories();
+        } else {
+            showToast('Failed to delete story', 'error');
+        }
+    } catch (err) {
+        showToast('Failed to delete story', 'error');
+    }
+}
+
+// ===============================
+// SIGHTINGS MANAGEMENT (NewFeatures)
+// ===============================
+async function loadSightings() {
+    try {
+        const res = await fetch(`${API_BASE}/api/admin/sightings`, { headers: authHeader });
+        if (!res.ok) return;
+        const sightings = await res.json();
+
+        const tbody = document.getElementById('sightingsTable');
+        if (!tbody) return;
+
+        tbody.innerHTML = sightings.length
+            ? sightings.map(s => {
+                const userName = s.users?.name || 'N/A';
+                const userEmail = s.users?.email || '';
+                const created = s.created_at ? new Date(s.created_at).toLocaleDateString() : 'N/A';
+                const img = s.image_url ? `<img src="${s.image_url}" class="thumb-img">` : 'None';
+
+                return `
+                <tr>
+                    <td>${s.id}</td>
+                    <td>${s.species_name || ''}</td>
+                    <td>${userName}<br><small>${userEmail}</small></td>
+                    <td>📍 ${s.location || 'Unknown'}</td>
+                    <td>${img}</td>
+                    <td>${created}</td>
+                    <td>
+                        <button class="btn btn-danger btn-sm" onclick="deleteSighting('${s.id}')">Delete</button>
+                    </td>
+                </tr>`;
+            }).join('')
+            : '<tr><td colspan="7" class="text-center">No sightings found</td></tr>';
+    } catch (err) {
+        console.error('Error loading sightings:', err);
+    }
+}
+
+async function deleteSighting(id) {
+    if (!confirm('Are you sure you want to delete this sighting?')) return;
+    try {
+        const res = await fetch(`${API_BASE}/api/admin/sightings/${id}`, {
+            method: 'DELETE',
+            headers: authHeader
+        });
+        if (res.ok) {
+            showToast('Sighting deleted', 'success');
+            loadSightings();
+        } else {
+            showToast('Failed to delete sighting', 'error');
+        }
+    } catch (err) {
+        showToast('Failed to delete sighting', 'error');
     }
 }
 
